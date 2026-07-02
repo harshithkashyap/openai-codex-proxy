@@ -37,6 +37,7 @@ This project should become less important if first-party Codex desktop support c
   - fallback refresh if `last_refresh` is older than 8 days
 - Refresh preserves unknown Codex auth fields and keeps `tokens.account_id` aligned with refreshed token claims
 - Local HTTP server
+- Linux system tray controller with proxy status, release version, start/stop actions, and log opening
 - `GET /health`
 - `GET /v1/models` using a configurable advertised model list, with Codex-style reasoning/verbosity/Fast service-tier metadata for GPT-5/Codex models
 - `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`
@@ -63,7 +64,7 @@ The proxy intentionally keeps `/v1/responses` and `/v1/responses/compact` as clo
 
 ## Usage
 
-Release archives and AppImages only provide an executable. Installing or copying the executable does not start a daemon, register a background service, or configure a desktop client. The proxy runs only while `openai-codex-proxy serve` is running, logs to the terminal by default, and stops on Ctrl-C.
+Release archives and AppImages only provide an executable. Installing, copying, or opening the executable does not install a daemon, register a background service, or configure a desktop client. The proxy runs only while `openai-codex-proxy serve` or `openai-codex-proxy tray` is running. In `serve` mode it logs to the terminal and stops on Ctrl-C. In `tray` mode it stops when you choose Quit from the tray menu or close the app process.
 
 The local API key is a secret you choose for downstream clients that connect to this localhost proxy. It is not your ChatGPT token.
 
@@ -80,9 +81,12 @@ Linux AppImages do not need installation:
 
 ```bash
 chmod +x openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage
+./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage
 ./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage status
 ./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage serve --local-api-key local-dev-secret
 ```
+
+Opening a release AppImage with no arguments starts the Linux tray controller. Passing any CLI argument keeps the normal command-line behavior.
 
 You can also put the AppImage on your PATH:
 
@@ -123,6 +127,20 @@ API key: local-dev-secret
 
 For tools that do not support a custom API key header but send `Authorization: Bearer ...`, use the same local API key as the bearer token.
 
+### Linux system tray
+
+For a lightweight desktop workflow on Linux, run the same executable in tray mode:
+
+```bash
+CODEX_PROXY_LOCAL_API_KEY=local-dev-secret openai-codex-proxy tray
+```
+
+The tray menu shows the current status, release/build identifier, base URL, and the latest lifecycle message. Use **Start Proxy** and **Stop Proxy** to control the proxy in the same process, **Open Logs** to open the sanitized compatibility log, and **Quit** to stop the proxy and exit the app.
+
+The tray starts stopped; it does not autostart the proxy, install a daemon, or persist a background service after Quit. The menu does not display ChatGPT tokens or your local API key.
+
+GNOME and some other desktops require AppIndicator/KStatusNotifier support to display tray icons. If your desktop does not expose a StatusNotifier/AppIndicator host, use `serve` mode or enable the desktop's tray support.
+
 To run the proxy in the background, wrap the same foreground command with your process manager. For example, a user-level systemd service at `~/.config/systemd/user/openai-codex-proxy.service` can run the proxy after you create `~/.config/openai-codex-proxy/env` containing `CODEX_PROXY_LOCAL_API_KEY=local-dev-secret`:
 
 ```ini
@@ -153,6 +171,7 @@ During development, replace `openai-codex-proxy` with `cargo run --`:
 ```bash
 cargo run -- status
 cargo run -- serve --addr 127.0.0.1:8787 --local-api-key local-dev-secret
+cargo run -- tray --local-api-key local-dev-secret
 ```
 
 ### Anthropic-compatible clients
@@ -254,7 +273,7 @@ git push origin v0.1.0
 
 You can also rerun the release workflow manually for an existing tag from the GitHub Actions UI.
 
-The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Each archive includes the binary, `README.md`, and `LICENSE`.
+The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Opening a release AppImage without arguments launches the tray controller; CLI subcommands still work by passing arguments. Each archive includes the binary, `README.md`, and `LICENSE`.
 
 Release assets include per-asset `.sha256` files and a combined `SHA256SUMS` file. The workflow also generates GitHub artifact attestations for each binary archive, each AppImage, and `SHA256SUMS`; verify them with:
 

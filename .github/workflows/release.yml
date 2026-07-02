@@ -205,6 +205,8 @@ jobs:
             release-${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binary
+        env:
+          CODEX_PROXY_BUILD_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Package Unix archive
@@ -253,6 +255,9 @@ jobs:
           #!/usr/bin/env sh
           set -eu
           appdir="$(dirname "$(readlink -f "$0")")"
+          if [ "$#" -eq 0 ]; then
+            exec "${appdir}/usr/bin/openai-codex-proxy" tray
+          fi
           exec "${appdir}/usr/bin/openai-codex-proxy" "$@"
           APP_RUN
           chmod +x "${appdir}/AppRun"
@@ -262,10 +267,10 @@ jobs:
           Type=Application
           Name=OpenAI Codex Proxy
           Comment=Local OpenAI-compatible proxy for the ChatGPT/Codex backend
-          Exec=${BIN_NAME}
+          Exec=${BIN_NAME} tray
           Icon=${BIN_NAME}
           Categories=Development;Network;
-          Terminal=true
+          Terminal=false
           DESKTOP_ENTRY
           cp "${appdir}/${BIN_NAME}.desktop" "${appdir}/usr/share/applications/${BIN_NAME}.desktop"
 

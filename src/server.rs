@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,12 +11,14 @@ use axum::http::{HeaderMap, Request, Response, StatusCode};
 use axum::middleware::{self, Next};
 use axum::routing::{get, post};
 use serde_json::json;
+use tokio::sync::oneshot;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info, warn};
 
 use crate::anthropic::{anthropic_count_tokens, anthropic_messages};
 use crate::auth::AuthManager;
 use crate::chat::chat_completions;
+use crate::config::build_version;
 use crate::cookies::with_chatgpt_cloudflare_cookie_store;
 use crate::errors::response_json;
 use crate::logging::{append_compat_log, compat_log_file, file_request_log};
@@ -69,6 +72,32 @@ pub(crate) async fn serve(
     models: Vec<String>,
     service_tier: Option<String>,
 ) -> Result<()> {
+    serve_until_shutdown(
+        addr,
+        local_api_key,
+        allow_no_local_api_key,
+        models,
+        service_tier,
+        async {
+            let _ = tokio::signal::ctrl_c().await;
+        },
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn serve_until_shutdown<F>(
+    addr: SocketAddr,
+    local_api_key: Option<String>,
+    allow_no_local_api_key: bool,
+    models: Vec<String>,
+    service_tier: Option<String>,
+    shutdown: F,
+    ready: Option<oneshot::Sender<SocketAddr>>,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     if !addr.ip().is_loopback() {
         warn!("binding to a non-loopback address");
         if local_api_key.is_none() {
@@ -96,7 +125,7 @@ pub(crate) async fn serve(
     let state = Arc::new(AppState {
         auth,
         client: with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder())
-            .user_agent(format!("openai-codex-proxy/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("openai-codex-proxy/{}", build_version()))
             .timeout(Duration::from_secs(300))
             .build()?,
         local_api_key,
@@ -130,23 +159,25 @@ pub(crate) async fn serve(
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("serving OpenAI-compatible proxy on http://{addr}");
+    let bound_addr = listener.local_addr()?;
+    info!("serving OpenAI-compatible proxy on http://{bound_addr}");
     if let Some(path) = compat_log_file() {
         info!("writing compatibility trace log to {}", path.display());
         append_compat_log(
             "proxy.start",
             json!({
-                "addr": addr.to_string(),
+                "addr": bound_addr.to_string(),
                 "log_file": path.display().to_string(),
                 "models": state.models.clone(),
                 "service_tier": state.service_tier.clone(),
             }),
         );
     }
+    if let Some(ready) = ready {
+        let _ = ready.send(bound_addr);
+    }
     axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }

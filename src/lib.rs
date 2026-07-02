@@ -10,6 +10,7 @@ mod models;
 mod responses;
 mod server;
 mod service_tier;
+mod tray;
 
 pub use cli::run;
 

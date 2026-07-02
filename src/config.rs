@@ -33,3 +33,7 @@ pub(crate) const UNSUPPORTED_CHAT_FIELDS: &[&str] = &[
     "modalities",
     "prediction",
 ];
+
+pub(crate) fn build_version() -> &'static str {
+    option_env!("CODEX_PROXY_BUILD_TAG").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
