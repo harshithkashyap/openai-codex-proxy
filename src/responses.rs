@@ -6,12 +6,13 @@ use axum::http::{HeaderMap, Response};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::error;
 
 use crate::config::{CODEX_RESPONSES_COMPACT_URL, CODEX_RESPONSES_URL, ORIGINATOR};
 use crate::errors::ProxyError;
 use crate::logging::{append_compat_log, header_str};
+use crate::reasoning::apply_default_reasoning_effort;
 use crate::server::AppState;
 use crate::service_tier::apply_default_service_tier_to_responses_body;
 
@@ -50,6 +51,11 @@ pub(crate) async fn forward_codex_responses(
     body: Bytes,
 ) -> Result<Response<Body>, ProxyError> {
     let original_body_len = body.len();
+    let (body, reasoning_effort) = if upstream_url == CODEX_RESPONSES_URL {
+        apply_default_reasoning_to_responses_body(body)?
+    } else {
+        (body, None)
+    };
     let (body, service_tier) =
         apply_default_service_tier_to_responses_body(body, state.service_tier.as_deref())?;
     append_compat_log(
@@ -58,6 +64,7 @@ pub(crate) async fn forward_codex_responses(
             "upstream": upstream_url,
             "body_bytes": original_body_len,
             "forwarded_body_bytes": body.len(),
+            "reasoning_effort": reasoning_effort,
             "service_tier": service_tier,
             "accept": header_str(downstream_headers, axum::http::header::ACCEPT.as_str()),
             "content_type": header_str(downstream_headers, axum::http::header::CONTENT_TYPE.as_str()),
@@ -124,6 +131,31 @@ pub(crate) async fn forward_codex_responses(
     builder
         .body(Body::from_stream(stream))
         .map_err(ProxyError::upstream)
+}
+
+pub(crate) fn apply_default_reasoning_to_responses_body(
+    body: Bytes,
+) -> Result<(Bytes, Option<String>), ProxyError> {
+    let mut value: Value = serde_json::from_slice(&body)
+        .map_err(|err| ProxyError::bad_request(format!("invalid JSON request body: {err}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| ProxyError::bad_request("responses request body must be a JSON object"))?;
+    let Some(model) = object
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok((body, None));
+    };
+
+    let reasoning_effort = apply_default_reasoning_effort(&model, &mut value)?;
+    let Some(reasoning_effort) = reasoning_effort else {
+        return Ok((body, None));
+    };
+
+    let body = serde_json::to_vec(&value).map_err(ProxyError::upstream)?;
+    Ok((Bytes::from(body), Some(reasoning_effort)))
 }
 
 pub(crate) fn passthrough_request_headers() -> &'static [&'static str] {

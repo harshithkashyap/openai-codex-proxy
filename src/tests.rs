@@ -279,6 +279,23 @@ fn anthropic_messages_request_maps_opus_alias_to_codex_chat_shape() {
 }
 
 #[test]
+fn anthropic_messages_request_gets_default_codex_reasoning_effort() {
+    let input = json!({
+        "model": "claude-opus-4-8",
+        "messages": [{"role": "user", "content": "Hello"}]
+    });
+
+    let chat = anthropic_to_chat_input(&input).expect("anthropic request should translate");
+    let (_, body) = build_responses_body_from_chat(&chat).expect("chat should translate");
+
+    assert_eq!(body["model"].as_str(), Some("gpt-5.5"));
+    assert_eq!(
+        body["reasoning"]["effort"].as_str(),
+        Some(DEFAULT_REASONING_EFFORT)
+    );
+}
+
+#[test]
 fn responses_output_maps_to_anthropic_message_shape() {
     let response = json!({
         "id": "resp_123",
@@ -336,6 +353,46 @@ fn responses_body_default_service_tier_maps_fast_to_priority() {
 }
 
 #[test]
+fn responses_body_applies_default_reasoning_effort_for_codex_models() {
+    let body = Bytes::from(
+        json!({
+            "model": "gpt-5.5",
+            "input": "Hello"
+        })
+        .to_string(),
+    );
+
+    let (body, reasoning_effort) =
+        apply_default_reasoning_to_responses_body(body).expect("body should map");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
+
+    assert_eq!(reasoning_effort.as_deref(), Some(DEFAULT_REASONING_EFFORT));
+    assert_eq!(
+        body["reasoning"]["effort"].as_str(),
+        Some(DEFAULT_REASONING_EFFORT)
+    );
+}
+
+#[test]
+fn responses_body_preserves_explicit_reasoning_effort() {
+    let body = Bytes::from(
+        json!({
+            "model": "gpt-5.5",
+            "input": "Hello",
+            "reasoning": { "effort": "low" }
+        })
+        .to_string(),
+    );
+
+    let (body, reasoning_effort) =
+        apply_default_reasoning_to_responses_body(body).expect("body should map");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
+
+    assert_eq!(reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("low"));
+}
+
+#[test]
 fn responses_body_default_service_tier_skips_unknown_models() {
     let body = Bytes::from(
         json!({
@@ -351,6 +408,24 @@ fn responses_body_default_service_tier_skips_unknown_models() {
 
     assert_eq!(service_tier, None);
     assert!(body.get("service_tier").is_none());
+}
+
+#[test]
+fn responses_body_skips_default_reasoning_effort_for_unknown_models() {
+    let body = Bytes::from(
+        json!({
+            "model": "gpt-4.1",
+            "input": "Hello"
+        })
+        .to_string(),
+    );
+
+    let (body, reasoning_effort) =
+        apply_default_reasoning_to_responses_body(body).expect("body should map");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
+
+    assert_eq!(reasoning_effort, None);
+    assert!(body.get("reasoning").is_none());
 }
 
 #[test]
@@ -478,6 +553,34 @@ fn chat_shim_defaults_to_current_model_when_model_is_omitted() {
 }
 
 #[test]
+fn chat_shim_applies_default_reasoning_effort_for_codex_models() {
+    let input = json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "Hello" }]
+    });
+
+    let (_, body) = build_responses_body_from_chat(&input).expect("chat should translate");
+
+    assert_eq!(
+        body["reasoning"]["effort"].as_str(),
+        Some(DEFAULT_REASONING_EFFORT)
+    );
+}
+
+#[test]
+fn chat_shim_preserves_explicit_reasoning_effort() {
+    let input = json!({
+        "model": "gpt-5.5",
+        "messages": [{ "role": "user", "content": "Hello" }],
+        "reasoning": { "effort": "low" }
+    });
+
+    let (_, body) = build_responses_body_from_chat(&input).expect("chat should translate");
+
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("low"));
+}
+
+#[test]
 fn model_catalog_advertises_codex_reasoning_metadata() {
     let model = model_catalog_entry("gpt-5.5", None);
 
@@ -602,6 +705,7 @@ fn chat_shim_does_not_apply_fast_default_to_unknown_models() {
         .expect("chat should translate");
 
     assert!(body.get("service_tier").is_none());
+    assert!(body.get("reasoning").is_none());
 }
 
 #[test]

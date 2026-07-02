@@ -81,6 +81,15 @@ pub(crate) async fn anthropic_messages_impl(
             "stream": stream,
             "input_items": responses_body.get("input").and_then(Value::as_array).map_or(0, Vec::len),
             "tools": responses_body.get("tools").and_then(Value::as_array).map_or(0, Vec::len),
+            "reasoning_effort": responses_body
+                .get("reasoning")
+                .and_then(|reasoning| reasoning.get("effort"))
+                .and_then(Value::as_str),
+            "reasoning_summary": responses_body
+                .get("reasoning")
+                .and_then(|reasoning| reasoning.get("summary"))
+                .and_then(Value::as_str),
+            "service_tier": responses_body.get("service_tier").and_then(Value::as_str),
         }),
     );
 

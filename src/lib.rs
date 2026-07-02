@@ -9,6 +9,7 @@ mod errors;
 mod local_config;
 mod logging;
 mod models;
+mod reasoning;
 mod responses;
 mod server;
 mod service_tier;

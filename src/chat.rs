@@ -17,6 +17,7 @@ use crate::errors::{ProxyError, response_json};
 use crate::logging::{
     append_compat_log, error_summary, sample_strings, tool_choice_summary, value_kind,
 };
+use crate::reasoning::apply_default_reasoning_effort;
 use crate::server::AppState;
 use crate::service_tier::{normalize_service_tier, service_tier_for_model};
 
@@ -553,6 +554,7 @@ pub(crate) fn build_responses_body_from_chat_with_service_tier(
         "store": false,
     });
     apply_chat_reasoning_and_text_options(input, &mut responses_body)?;
+    let _ = apply_default_reasoning_effort(&model, &mut responses_body)?;
     apply_chat_tool_options(input, &mut responses_body)?;
     apply_chat_service_tier_option(input, &mut responses_body, default_service_tier)?;
     Ok((model, responses_body))

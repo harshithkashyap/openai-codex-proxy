@@ -41,11 +41,11 @@ This project should become less important if first-party Codex desktop support c
 - Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, copyable client settings, bundled project icons, proxy status, release version, start/stop actions, and log opening
 - `GET /health`
 - `GET /v1/models` using a configurable advertised model list, with Codex-style reasoning/verbosity/Fast service-tier metadata for GPT-5/Codex models
-- `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`
+- `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`, with GPT-5/Codex-family requests defaulting to `reasoning.effort: "xhigh"` when the client omits reasoning effort
 - `POST /v1/responses/compact` pass-through proxy to `https://chatgpt.com/backend-api/codex/responses/compact`
 - Selected Codex/OpenAI pass-through headers, including session/thread metadata, attestation, tracing, compression, rate-limit, and usage-window headers
 - Restricted ChatGPT Cloudflare infrastructure cookie store for upstream requests only
-- Narrow `POST /v1/chat/completions` compatibility shim, including streaming, text/image content parts, function tool calls, function tool outputs, best-effort mapping for `reasoning`, `reasoning_effort`, `reasoningSummary`, verbosity options, and `service_tier`
+- Narrow `POST /v1/chat/completions` compatibility shim, including streaming, text/image content parts, function tool calls, function tool outputs, best-effort mapping for `reasoning`, `reasoning_effort`, `reasoningSummary`, verbosity options, and `service_tier`. GPT-5/Codex-family translated requests default to `reasoning.effort: "xhigh"` when the client omits reasoning effort.
 - Narrow Anthropic Messages compatibility shim at `POST /v1/messages`, plus `POST /v1/messages/count_tokens`
 - Anthropic-shaped model discovery from `GET /v1/models` when the request includes `x-codex-proxy-format: anthropic` or an `anthropic-version` header
 - Sanitized JSONL compatibility trace log at `/tmp/openai-codex-proxy.log`
@@ -57,7 +57,7 @@ The proxy intentionally keeps `/v1/responses` and `/v1/responses/compact` as clo
 - Structured outputs, audio content parts, legacy `functions` fields, and other advanced `/v1/chat/completions` translation. Use `/v1/responses` for those request shapes.
 - `/v1/chat/completions` stream usage chunks from `stream_options` are not synthesized.
 - Anthropic compatibility is intentionally narrow. It supports message text, image blocks, tool use/tool results, streaming, non-streaming aggregation, and a rough local token count estimate, not every Claude API field or exact usage accounting.
-- Some clients hardcode thinking/reasoning controls from their own model catalog. `/v1/models` advertises Codex-compatible reasoning metadata, but a client may still hide its UI control for custom providers.
+- Some clients hardcode thinking/reasoning controls from their own model catalog. `/v1/models` advertises Codex-compatible reasoning metadata, but a client may still hide its UI control for custom providers. For GPT-5/Codex-family Responses, Chat Completions, and Anthropic-compatible requests, the proxy still applies `reasoning.effort: "xhigh"` upstream when the client omits reasoning effort.
 - Full OpenAI response-shape normalization for every endpoint.
 - `/v1/embeddings`, `/v1/images`, `/v1/audio`, etc.
 - OS keychain storage in this proxy. Use Codex itself if your Codex auth is keychain-backed.
