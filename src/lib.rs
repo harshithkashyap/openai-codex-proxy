@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod cookies;
 mod errors;
+mod local_config;
 mod logging;
 mod models;
 mod responses;

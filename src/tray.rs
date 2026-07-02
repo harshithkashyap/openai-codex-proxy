@@ -41,6 +41,9 @@ pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::io::Write;
+    use std::process::Stdio;
+
     use anyhow::{Context, Result};
     use ksni::menu::StandardItem;
     use ksni::{MenuItem, Status, ToolTip, Tray, TrayMethods};
@@ -48,17 +51,35 @@ mod linux {
     use tokio::task::JoinHandle;
 
     use super::TrayConfig;
-    use crate::config::build_version;
+    use crate::auth::{AuthManager, StoredAuth, login_browser};
+    use crate::config::{DEFAULT_OAUTH_CALLBACK_PORT, build_version};
+    use crate::local_config::{LocalApiKeySource, ensure_local_api_key};
     use crate::logging::compat_log_file;
     use crate::server::serve_until_shutdown;
 
-    pub(super) async fn run(config: TrayConfig) -> Result<()> {
+    pub(super) async fn run(mut config: TrayConfig) -> Result<()> {
+        let local_key = ensure_local_api_key(config.local_api_key.clone()).await?;
+        config.local_api_key = Some(local_key.value.clone());
+        config.allow_no_local_api_key = false;
+
+        let auth = AuthManager::new().await?;
+        let auth_status = auth_status_from(auth.cached().await);
+        let initial_message = match local_key.source {
+            LocalApiKeySource::Generated => format!(
+                "Generated a local proxy API key at {}",
+                local_key.config_path.display()
+            ),
+            LocalApiKeySource::Stored => "Loaded saved local proxy API key".into(),
+            LocalApiKeySource::Provided => "Using configured local proxy API key".into(),
+        };
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
         let config_for_server = config.clone();
         let tray = ProxyTray {
             config,
             status: ProxyStatus::Stopped,
-            last_message: Some("Proxy is stopped".into()),
+            auth_status,
+            local_api_key: local_key.value,
+            last_message: Some(initial_message),
             command_tx: command_tx.clone(),
         };
         let handle = tray.spawn().await.context(
@@ -76,6 +97,18 @@ mod linux {
                             .await;
                         continue;
                     }
+                    let start_auth = AuthManager::new().await?;
+                    let start_auth_status = auth_status_from(start_auth.cached().await);
+                    if !start_auth_status.is_connected() {
+                        set_auth_status(&handle, AuthStatus::Disconnected).await;
+                        set_last_message(
+                            &handle,
+                            "Sign in to ChatGPT before starting the proxy".into(),
+                        )
+                        .await;
+                        continue;
+                    }
+                    set_auth_status(&handle, start_auth_status).await;
 
                     stop_requested = false;
                     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -121,32 +154,91 @@ mod linux {
                 }
                 TrayCommand::Stop => {
                     stop_requested = true;
-                    if let Some(server) = running.as_mut() {
-                        if let Some(shutdown) = server.shutdown.take() {
-                            let _ = shutdown.send(());
-                            set_tray(
-                                &handle,
-                                ProxyStatus::Stopping,
-                                Some("Stopping proxy".into()),
-                            )
-                            .await;
-                        } else {
-                            set_tray(
-                                &handle,
-                                ProxyStatus::Stopping,
-                                Some("Proxy is already stopping".into()),
-                            )
-                            .await;
+                    if request_stop(&mut running, &handle, "Stopping proxy".into()).await {
+                        continue;
+                    }
+
+                    stop_requested = false;
+                    set_tray(
+                        &handle,
+                        ProxyStatus::Stopped,
+                        Some("Proxy is already stopped".into()),
+                    )
+                    .await;
+                }
+                TrayCommand::Login => {
+                    set_auth_status(&handle, AuthStatus::LoggingIn).await;
+                    set_last_message(&handle, "Opening ChatGPT login in your browser".into()).await;
+                    let login_command_tx = command_tx.clone();
+                    tokio::spawn(async move {
+                        let result = async {
+                            let auth = AuthManager::new().await?;
+                            login_browser(&auth, DEFAULT_OAUTH_CALLBACK_PORT).await?;
+                            Ok::<_, anyhow::Error>(auth_status_from(auth.cached().await))
                         }
-                    } else {
-                        stop_requested = false;
-                        set_tray(
+                        .await
+                        .map_err(|err| err.to_string());
+                        let _ = login_command_tx.send(TrayCommand::LoginFinished(result));
+                    });
+                }
+                TrayCommand::LoginFinished(result) => match result {
+                    Ok(status) => {
+                        let message = format!("ChatGPT {}", status.label().to_lowercase());
+                        set_auth_status(&handle, status).await;
+                        set_last_message(&handle, message).await;
+                    }
+                    Err(message) => {
+                        set_auth_status(&handle, auth_status_from(auth.cached().await)).await;
+                        set_last_message(
                             &handle,
-                            ProxyStatus::Stopped,
-                            Some("Proxy is already stopped".into()),
+                            format!("ChatGPT login failed: {}", clip(&message, 120)),
                         )
                         .await;
                     }
+                },
+                TrayCommand::Logout => {
+                    let stopped = if running.is_some() {
+                        stop_requested = true;
+                        request_stop(&mut running, &handle, "Stopping proxy before logout".into())
+                            .await
+                    } else {
+                        stop_requested = false;
+                        false
+                    };
+
+                    match auth.clear().await {
+                        Ok(()) => {
+                            set_auth_status(&handle, AuthStatus::Disconnected).await;
+                            let message = if stopped {
+                                "Logged out of ChatGPT; proxy is stopping"
+                            } else {
+                                "Logged out of ChatGPT"
+                            };
+                            set_last_message(&handle, message.into()).await;
+                        }
+                        Err(err) => {
+                            set_last_message(
+                                &handle,
+                                format!("ChatGPT logout failed: {}", clip(&err.to_string(), 120)),
+                            )
+                            .await;
+                        }
+                    }
+                }
+                TrayCommand::CopyBaseUrl => {
+                    let message = copy_to_clipboard(&base_url(config_for_server.addr), "base URL");
+                    set_last_message(&handle, message).await;
+                }
+                TrayCommand::CopyApiKey => {
+                    let key = config_for_server.local_api_key.clone().unwrap_or_default();
+                    let message = copy_to_clipboard(&key, "local API key");
+                    set_last_message(&handle, message).await;
+                }
+                TrayCommand::CopyClientSettings => {
+                    let key = config_for_server.local_api_key.clone().unwrap_or_default();
+                    let settings = client_settings(config_for_server.addr, &key);
+                    let message = copy_to_clipboard(&settings, "client settings");
+                    set_last_message(&handle, message).await;
                 }
                 TrayCommand::OpenLogs => {
                     let message = open_logs();
@@ -205,6 +297,12 @@ mod linux {
     enum TrayCommand {
         Start,
         Stop,
+        Login,
+        LoginFinished(std::result::Result<AuthStatus, String>),
+        Logout,
+        CopyBaseUrl,
+        CopyApiKey,
+        CopyClientSettings,
         OpenLogs,
         Quit,
         ServerReady(std::net::SocketAddr),
@@ -218,6 +316,66 @@ mod linux {
         Running,
         Stopping,
         Failed(String),
+    }
+
+    #[derive(Clone)]
+    enum AuthStatus {
+        Connected {
+            account_id: Option<String>,
+            plan_type: Option<String>,
+        },
+        Disconnected,
+        LoggingIn,
+    }
+
+    impl AuthStatus {
+        fn label(&self) -> String {
+            match self {
+                Self::Connected {
+                    account_id: _,
+                    plan_type,
+                } => {
+                    let plan = plan_type.as_deref().unwrap_or("unknown plan");
+                    format!("Connected ({plan})")
+                }
+                Self::Disconnected => "Not signed in".into(),
+                Self::LoggingIn => "Signing in".into(),
+            }
+        }
+
+        fn detail(&self) -> String {
+            match self {
+                Self::Connected {
+                    account_id,
+                    plan_type,
+                } => {
+                    let account = if account_id.is_some() {
+                        "account present"
+                    } else {
+                        "account missing"
+                    };
+                    format!(
+                        "ChatGPT: connected, {}, {}",
+                        plan_type.as_deref().unwrap_or("unknown plan"),
+                        account
+                    )
+                }
+                Self::Disconnected => "ChatGPT: not signed in".into(),
+                Self::LoggingIn => "ChatGPT: signing in".into(),
+            }
+        }
+
+        fn is_connected(&self) -> bool {
+            matches!(self, Self::Connected { .. })
+        }
+
+        fn can_login(&self) -> bool {
+            matches!(self, Self::Disconnected)
+        }
+
+        fn can_logout(&self) -> bool {
+            matches!(self, Self::Connected { .. })
+        }
     }
 
     impl ProxyStatus {
@@ -243,6 +401,8 @@ mod linux {
     struct ProxyTray {
         config: TrayConfig,
         status: ProxyStatus,
+        auth_status: AuthStatus,
+        local_api_key: String,
         last_message: Option<String>,
         command_tx: mpsc::UnboundedSender<TrayCommand>,
     }
@@ -324,22 +484,25 @@ mod linux {
                 icon_name: self.icon_name(),
                 title: self.title(),
                 description: format!(
-                    "Status: {}\nRelease: {}\nBase URL: http://{}/v1",
+                    "Status: {}\n{}\nRelease: {}\nBase URL: {}",
                     self.status.label(),
+                    self.auth_status.detail(),
                     build_version(),
-                    self.config.addr
+                    base_url(self.config.addr)
                 ),
                 ..Default::default()
             }
         }
 
         fn menu(&self) -> Vec<MenuItem<Self>> {
-            let start_enabled = self.status.can_start();
+            let start_enabled = self.status.can_start() && self.auth_status.is_connected();
             let stop_enabled = self.status.can_stop();
             let mut items = vec![
                 Self::disabled_item(format!("Status: {}", self.status.label())),
+                Self::disabled_item(self.auth_status.detail()),
                 Self::disabled_item(format!("Release: {}", build_version())),
-                Self::disabled_item(format!("Base URL: http://{}/v1", self.config.addr)),
+                Self::disabled_item(format!("Base URL: {}", base_url(self.config.addr))),
+                Self::disabled_item("Local API key: configured"),
             ];
 
             if let Some(message) = self.last_message.as_deref() {
@@ -363,6 +526,48 @@ mod linux {
                     TrayCommand::Stop,
                     Some(ProxyStatus::Stopping),
                     Some("Stopping proxy".into()),
+                ),
+                MenuItem::Separator,
+                Self::command_item(
+                    "Log in to ChatGPT",
+                    "dialog-password",
+                    self.auth_status.can_login(),
+                    TrayCommand::Login,
+                    None,
+                    Some("Opening ChatGPT login in your browser".into()),
+                ),
+                Self::command_item(
+                    "Log out of ChatGPT",
+                    "system-log-out",
+                    self.auth_status.can_logout(),
+                    TrayCommand::Logout,
+                    None,
+                    Some("Logging out of ChatGPT".into()),
+                ),
+                MenuItem::Separator,
+                Self::command_item(
+                    "Copy Base URL",
+                    "edit-copy",
+                    true,
+                    TrayCommand::CopyBaseUrl,
+                    None,
+                    Some("Copying base URL".into()),
+                ),
+                Self::command_item(
+                    "Copy API Key",
+                    "edit-copy",
+                    !self.local_api_key.is_empty(),
+                    TrayCommand::CopyApiKey,
+                    None,
+                    Some("Copying local API key".into()),
+                ),
+                Self::command_item(
+                    "Copy Client Settings",
+                    "edit-copy",
+                    !self.local_api_key.is_empty(),
+                    TrayCommand::CopyClientSettings,
+                    None,
+                    Some("Copying client settings".into()),
                 ),
                 MenuItem::Separator,
                 Self::command_item(
@@ -401,12 +606,102 @@ mod linux {
             .await;
     }
 
+    async fn set_auth_status(handle: &ksni::Handle<ProxyTray>, auth_status: AuthStatus) {
+        let _ = handle
+            .update(|tray| {
+                tray.auth_status = auth_status;
+            })
+            .await;
+    }
+
     async fn set_last_message(handle: &ksni::Handle<ProxyTray>, message: String) {
         let _ = handle
             .update(|tray| {
                 tray.last_message = Some(message);
             })
             .await;
+    }
+
+    async fn request_stop(
+        running: &mut Option<RunningServer>,
+        handle: &ksni::Handle<ProxyTray>,
+        message: String,
+    ) -> bool {
+        if let Some(server) = running.as_mut() {
+            if let Some(shutdown) = server.shutdown.take() {
+                let _ = shutdown.send(());
+                set_tray(handle, ProxyStatus::Stopping, Some(message)).await;
+            } else {
+                set_tray(
+                    handle,
+                    ProxyStatus::Stopping,
+                    Some("Proxy is already stopping".into()),
+                )
+                .await;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn auth_status_from(auth: Option<StoredAuth>) -> AuthStatus {
+        match auth {
+            Some(auth) => AuthStatus::Connected {
+                account_id: auth.account_id,
+                plan_type: auth.plan_type,
+            },
+            None => AuthStatus::Disconnected,
+        }
+    }
+
+    fn base_url(addr: std::net::SocketAddr) -> String {
+        format!("http://{addr}/v1")
+    }
+
+    fn client_settings(addr: std::net::SocketAddr, local_api_key: &str) -> String {
+        format!(
+            "Base URL: {}\nAPI key: {}\nAuthorization: Bearer {}",
+            base_url(addr),
+            local_api_key,
+            local_api_key
+        )
+    }
+
+    fn copy_to_clipboard(value: &str, label: &str) -> String {
+        for (program, args) in [
+            ("wl-copy", &[][..]),
+            ("xclip", &["-selection", "clipboard"][..]),
+            ("xsel", &["--clipboard", "--input"][..]),
+        ] {
+            if copy_with_command(program, args, value).is_ok() {
+                return format!("Copied {label}");
+            }
+        }
+
+        format!("Could not copy {label}; install wl-copy, xclip, or xsel")
+    }
+
+    fn copy_with_command(program: &str, args: &[&str], value: &str) -> std::io::Result<()> {
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(value.as_bytes())?;
+        }
+
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "{program} exited with {status}"
+            )))
+        }
     }
 
     fn open_logs() -> String {

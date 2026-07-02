@@ -36,8 +36,9 @@ This project should become less important if first-party Codex desktop support c
   - refreshes within 5 minutes of JWT expiry
   - fallback refresh if `last_refresh` is older than 8 days
 - Refresh preserves unknown Codex auth fields and keeps `tokens.account_id` aligned with refreshed token claims
+- Local proxy config for generated downstream API keys
 - Local HTTP server
-- Linux system tray controller with proxy status, release version, start/stop actions, and log opening
+- Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, copyable client settings, proxy status, release version, start/stop actions, and log opening
 - `GET /health`
 - `GET /v1/models` using a configurable advertised model list, with Codex-style reasoning/verbosity/Fast service-tier metadata for GPT-5/Codex models
 - `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`
@@ -66,7 +67,7 @@ The proxy intentionally keeps `/v1/responses` and `/v1/responses/compact` as clo
 
 Release archives and AppImages only provide an executable. Installing, copying, or opening the executable does not install a daemon, register a background service, or configure a desktop client. The proxy runs only while `openai-codex-proxy serve` or `openai-codex-proxy tray` is running. In `serve` mode it logs to the terminal and stops on Ctrl-C. In `tray` mode it stops when you choose Quit from the tray menu or close the app process.
 
-The local API key is a secret you choose for downstream clients that connect to this localhost proxy. It is not your ChatGPT token.
+The local API key is a secret for downstream clients that connect to this localhost proxy. It is not your ChatGPT token. In `serve` mode you provide it with `--local-api-key` or `CODEX_PROXY_LOCAL_API_KEY`. In Linux tray mode the app generates and saves one automatically if you did not provide one.
 
 ### Install a release binary
 
@@ -146,12 +147,24 @@ For tools that do not support a custom API key header but send `Authorization: B
 For a lightweight desktop workflow on Linux, run the same executable in tray mode:
 
 ```bash
-CODEX_PROXY_LOCAL_API_KEY=local-dev-secret openai-codex-proxy tray
+openai-codex-proxy tray
 ```
 
-The tray menu shows the current status, release/build identifier, base URL, and the latest lifecycle message. Use **Start Proxy** and **Stop Proxy** to control the proxy in the same process, **Open Logs** to open the sanitized compatibility log, and **Quit** to stop the proxy and exit the app.
+Opening a release AppImage without arguments also starts tray mode.
 
-The tray starts stopped; it does not autostart the proxy, install a daemon, or persist a background service after Quit. The menu does not display ChatGPT tokens or your local API key.
+The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
+
+Use **Copy Base URL**, **Copy API Key**, or **Copy Client Settings** to configure clients. The default copied settings are:
+
+```text
+Base URL: http://127.0.0.1:8787/v1
+API key: <generated local proxy key>
+Authorization: Bearer <generated local proxy key>
+```
+
+The tray stores the generated local proxy API key in the user config directory, normally `~/.config/openai-codex-proxy/config.json`, with owner-only file permissions on Unix. Override that path with `CODEX_PROXY_CONFIG_FILE`. The tray does not display ChatGPT OAuth tokens or the local API key in the menu; it only copies the local API key when requested. Clipboard copy uses `wl-copy`, `xclip`, or `xsel`, so install one of those utilities if copy actions report that no clipboard command is available.
+
+The tray starts stopped; it does not autostart the proxy, install a daemon, or persist a background service after Quit.
 
 GNOME and some other desktops require AppIndicator/KStatusNotifier support to display tray icons. If your desktop does not expose a StatusNotifier/AppIndicator host, use `serve` mode or enable the desktop's tray support.
 

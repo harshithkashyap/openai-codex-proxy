@@ -125,10 +125,21 @@ impl AuthManager {
         Ok(())
     }
 
+    pub(crate) async fn clear(&self) -> Result<()> {
+        match tokio::fs::remove_file(&self.path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context("failed to remove ChatGPT auth file"),
+        }
+        *self.inner.lock().await = None;
+        Ok(())
+    }
+
     pub(crate) async fn access_for_request(&self) -> Result<(String, String)> {
         let mut guard = self.inner.lock().await;
-        if let Some(disk_state) = load_auth_from_path(&self.path).await? {
-            *guard = Some(disk_state);
+        match load_auth_from_path(&self.path).await? {
+            Some(disk_state) => *guard = Some(disk_state),
+            None => *guard = None,
         }
 
         let state = guard
@@ -475,7 +486,7 @@ pub(crate) async fn oauth_callback(
         let message = params.error_description.unwrap_or(error);
         send_oauth_callback_result(&state, OAuthCallbackResult::Error(message)).await;
         return Html(
-            "<!doctype html><title>OpenAI Codex Proxy</title><h1>Login failed</h1><p>Return to the terminal for details.</p>"
+            "<!doctype html><title>OpenAI Codex Proxy</title><h1>Login failed</h1><p>Return to OpenAI Codex Proxy for details.</p>"
                 .to_string(),
         );
     }
@@ -508,7 +519,7 @@ pub(crate) async fn oauth_callback(
 
     send_oauth_callback_result(&state, OAuthCallbackResult::Code(code)).await;
     Html(
-        "<!doctype html><title>OpenAI Codex Proxy</title><h1>Login complete</h1><p>You can close this window and return to the terminal.</p>"
+        "<!doctype html><title>OpenAI Codex Proxy</title><h1>Login complete</h1><p>You can close this window and return to OpenAI Codex Proxy.</p>"
             .to_string(),
     )
 }
