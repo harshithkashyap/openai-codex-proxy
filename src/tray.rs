@@ -46,7 +46,7 @@ mod linux {
 
     use anyhow::{Context, Result};
     use ksni::menu::StandardItem;
-    use ksni::{MenuItem, Status, ToolTip, Tray, TrayMethods};
+    use ksni::{Icon, MenuItem, Status, ToolTip, Tray, TrayMethods};
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
 
@@ -396,6 +396,48 @@ mod linux {
         fn can_stop(&self) -> bool {
             matches!(self, Self::Starting | Self::Running)
         }
+
+        fn icon_state(&self) -> TrayIconState {
+            match self {
+                Self::Stopped => TrayIconState::Stopped,
+                Self::Starting | Self::Stopping => TrayIconState::Starting,
+                Self::Running => TrayIconState::Running,
+                Self::Failed(_) => TrayIconState::Failed,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TrayIconState {
+        Stopped,
+        Starting,
+        Running,
+        Failed,
+    }
+
+    #[derive(Clone, Copy)]
+    enum MenuIcon {
+        Start,
+        Stop,
+        Login,
+        Logout,
+        Copy,
+        Logs,
+        Quit,
+    }
+
+    impl MenuIcon {
+        fn data(self) -> &'static [u8] {
+            match self {
+                Self::Start => include_bytes!("../assets/icons/menu/start.png"),
+                Self::Stop => include_bytes!("../assets/icons/menu/stop.png"),
+                Self::Login => include_bytes!("../assets/icons/menu/login.png"),
+                Self::Logout => include_bytes!("../assets/icons/menu/logout.png"),
+                Self::Copy => include_bytes!("../assets/icons/menu/copy.png"),
+                Self::Logs => include_bytes!("../assets/icons/menu/logs.png"),
+                Self::Quit => include_bytes!("../assets/icons/menu/quit.png"),
+            }
+        }
     }
 
     struct ProxyTray {
@@ -423,7 +465,7 @@ mod linux {
 
         fn command_item(
             label: impl Into<String>,
-            icon_name: impl Into<String>,
+            icon: MenuIcon,
             enabled: bool,
             command: TrayCommand,
             status_after_click: Option<ProxyStatus>,
@@ -431,7 +473,7 @@ mod linux {
         ) -> MenuItem<Self> {
             StandardItem {
                 label: label.into(),
-                icon_name: icon_name.into(),
+                icon_data: icon.data().to_vec(),
                 enabled,
                 activate: Box::new(move |tray: &mut Self| {
                     if let Some(status) = status_after_click.clone() {
@@ -467,21 +509,24 @@ mod linux {
         }
 
         fn icon_name(&self) -> String {
-            match &self.status {
-                ProxyStatus::Stopped => "network-offline".into(),
-                ProxyStatus::Starting | ProxyStatus::Stopping => "view-refresh".into(),
-                ProxyStatus::Running => "network-server".into(),
-                ProxyStatus::Failed(_) => "dialog-warning".into(),
-            }
+            String::new()
+        }
+
+        fn icon_pixmap(&self) -> Vec<Icon> {
+            tray_icon_pixmap(self.status.icon_state())
         }
 
         fn attention_icon_name(&self) -> String {
-            "dialog-warning".into()
+            String::new()
+        }
+
+        fn attention_icon_pixmap(&self) -> Vec<Icon> {
+            tray_icon_pixmap(TrayIconState::Failed)
         }
 
         fn tool_tip(&self) -> ToolTip {
             ToolTip {
-                icon_name: self.icon_name(),
+                icon_pixmap: self.icon_pixmap(),
                 title: self.title(),
                 description: format!(
                     "Status: {}\n{}\nRelease: {}\nBase URL: {}",
@@ -513,7 +558,7 @@ mod linux {
                 MenuItem::Separator,
                 Self::command_item(
                     "Start Proxy",
-                    "media-playback-start",
+                    MenuIcon::Start,
                     start_enabled,
                     TrayCommand::Start,
                     Some(ProxyStatus::Starting),
@@ -521,7 +566,7 @@ mod linux {
                 ),
                 Self::command_item(
                     "Stop Proxy",
-                    "media-playback-stop",
+                    MenuIcon::Stop,
                     stop_enabled,
                     TrayCommand::Stop,
                     Some(ProxyStatus::Stopping),
@@ -530,7 +575,7 @@ mod linux {
                 MenuItem::Separator,
                 Self::command_item(
                     "Log in to ChatGPT",
-                    "dialog-password",
+                    MenuIcon::Login,
                     self.auth_status.can_login(),
                     TrayCommand::Login,
                     None,
@@ -538,7 +583,7 @@ mod linux {
                 ),
                 Self::command_item(
                     "Log out of ChatGPT",
-                    "system-log-out",
+                    MenuIcon::Logout,
                     self.auth_status.can_logout(),
                     TrayCommand::Logout,
                     None,
@@ -547,7 +592,7 @@ mod linux {
                 MenuItem::Separator,
                 Self::command_item(
                     "Copy Base URL",
-                    "edit-copy",
+                    MenuIcon::Copy,
                     true,
                     TrayCommand::CopyBaseUrl,
                     None,
@@ -555,7 +600,7 @@ mod linux {
                 ),
                 Self::command_item(
                     "Copy API Key",
-                    "edit-copy",
+                    MenuIcon::Copy,
                     !self.local_api_key.is_empty(),
                     TrayCommand::CopyApiKey,
                     None,
@@ -563,7 +608,7 @@ mod linux {
                 ),
                 Self::command_item(
                     "Copy Client Settings",
-                    "edit-copy",
+                    MenuIcon::Copy,
                     !self.local_api_key.is_empty(),
                     TrayCommand::CopyClientSettings,
                     None,
@@ -572,7 +617,7 @@ mod linux {
                 MenuItem::Separator,
                 Self::command_item(
                     "Open Logs",
-                    "text-x-generic",
+                    MenuIcon::Logs,
                     true,
                     TrayCommand::OpenLogs,
                     None,
@@ -581,7 +626,7 @@ mod linux {
                 MenuItem::Separator,
                 Self::command_item(
                     "Quit",
-                    "application-exit",
+                    MenuIcon::Quit,
                     true,
                     TrayCommand::Quit,
                     Some(ProxyStatus::Stopping),
@@ -643,6 +688,201 @@ mod linux {
         } else {
             false
         }
+    }
+
+    fn tray_icon_pixmap(state: TrayIconState) -> Vec<Icon> {
+        match state {
+            TrayIconState::Stopped => tray_icon_set(&[
+                (
+                    16,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/16x16/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    22,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/22x22/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    24,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/24x24/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    32,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/32x32/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    48,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/48x48/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    64,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/64x64/openai-codex-proxy-tray-stopped.argb"
+                    )
+                    .as_slice(),
+                ),
+            ]),
+            TrayIconState::Starting => tray_icon_set(&[
+                (
+                    16,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/16x16/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    22,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/22x22/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    24,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/24x24/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    32,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/32x32/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    48,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/48x48/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    64,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/64x64/openai-codex-proxy-tray-starting.argb"
+                    )
+                    .as_slice(),
+                ),
+            ]),
+            TrayIconState::Running => tray_icon_set(&[
+                (
+                    16,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/16x16/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    22,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/22x22/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    24,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/24x24/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    32,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/32x32/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    48,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/48x48/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    64,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/64x64/openai-codex-proxy-tray-running.argb"
+                    )
+                    .as_slice(),
+                ),
+            ]),
+            TrayIconState::Failed => tray_icon_set(&[
+                (
+                    16,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/16x16/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    22,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/22x22/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    24,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/24x24/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    32,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/32x32/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    48,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/48x48/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+                (
+                    64,
+                    include_bytes!(
+                        "../assets/icons/tray/raw/64x64/openai-codex-proxy-tray-failed.argb"
+                    )
+                    .as_slice(),
+                ),
+            ]),
+        }
+    }
+
+    fn tray_icon_set(entries: &[(i32, &'static [u8])]) -> Vec<Icon> {
+        entries
+            .iter()
+            .map(|(size, data)| {
+                debug_assert_eq!(data.len(), (*size as usize) * (*size as usize) * 4);
+                Icon {
+                    width: *size,
+                    height: *size,
+                    data: (*data).to_vec(),
+                }
+            })
+            .collect()
     }
 
     fn auth_status_from(auth: Option<StoredAuth>) -> AuthStatus {

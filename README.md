@@ -38,7 +38,7 @@ This project should become less important if first-party Codex desktop support c
 - Refresh preserves unknown Codex auth fields and keeps `tokens.account_id` aligned with refreshed token claims
 - Local proxy config for generated downstream API keys
 - Local HTTP server
-- Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, copyable client settings, proxy status, release version, start/stop actions, and log opening
+- Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, copyable client settings, bundled project icons, proxy status, release version, start/stop actions, and log opening
 - `GET /health`
 - `GET /v1/models` using a configurable advertised model list, with Codex-style reasoning/verbosity/Fast service-tier metadata for GPT-5/Codex models
 - `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`
@@ -74,17 +74,17 @@ The local API key is a secret for downstream clients that connect to this localh
 Linux and macOS release archives contain the executable plus `README.md` and `LICENSE`:
 
 ```bash
-tar -xzf openai-codex-proxy-linux-x64.tar.gz
-sudo install -m 0755 openai-codex-proxy-linux-x64/openai-codex-proxy /usr/local/bin/openai-codex-proxy
+tar -xzf openai-codex-proxy-0.1.0-linux-x64.tar.gz
+sudo install -m 0755 openai-codex-proxy-0.1.0-linux-x64/openai-codex-proxy /usr/local/bin/openai-codex-proxy
 ```
 
 Linux AppImages do not need installation:
 
 ```bash
-chmod +x openai-codex-proxy-linux-x64.AppImage
-./openai-codex-proxy-linux-x64.AppImage
-./openai-codex-proxy-linux-x64.AppImage status
-./openai-codex-proxy-linux-x64.AppImage serve --local-api-key local-dev-secret
+chmod +x openai-codex-proxy-0.1.0-linux-x64.AppImage
+./openai-codex-proxy-0.1.0-linux-x64.AppImage
+./openai-codex-proxy-0.1.0-linux-x64.AppImage status
+./openai-codex-proxy-0.1.0-linux-x64.AppImage serve --local-api-key local-dev-secret
 ```
 
 Opening a release AppImage with no arguments starts the Linux tray controller. Passing any CLI argument keeps the normal command-line behavior.
@@ -93,23 +93,23 @@ You can also put the AppImage on your PATH:
 
 ```bash
 mkdir -p ~/.local/bin
-mv openai-codex-proxy-linux-x64.AppImage ~/.local/bin/openai-codex-proxy
+mv openai-codex-proxy-0.1.0-linux-x64.AppImage ~/.local/bin/openai-codex-proxy
 ```
 
 Windows release archives contain `openai-codex-proxy.exe`; run it from PowerShell or add its directory to `PATH`.
 
-Release asset names are intentionally short because the GitHub release tag already identifies the exact build:
+Stable release asset names include the release version and intentionally omit commit hashes. Automatic `main` prereleases use the package version plus a SemVer prerelease-style build segment, such as `openai-codex-proxy-0.1.0-main.8.1-linux-x64.AppImage`.
 
 | Platform | Asset |
 | --- | --- |
-| Linux x64 AppImage | `openai-codex-proxy-linux-x64.AppImage` |
-| Linux ARM64 AppImage | `openai-codex-proxy-linux-arm64.AppImage` |
-| Linux x64 archive | `openai-codex-proxy-linux-x64.tar.gz` |
-| Linux ARM64 archive | `openai-codex-proxy-linux-arm64.tar.gz` |
-| macOS Intel archive | `openai-codex-proxy-macos-x64.tar.gz` |
-| macOS Apple Silicon archive | `openai-codex-proxy-macos-arm64.tar.gz` |
-| Windows x64 archive | `openai-codex-proxy-windows-x64.zip` |
-| Windows ARM64 archive | `openai-codex-proxy-windows-arm64.zip` |
+| Linux x64 AppImage | `openai-codex-proxy-0.1.0-linux-x64.AppImage` |
+| Linux ARM64 AppImage | `openai-codex-proxy-0.1.0-linux-arm64.AppImage` |
+| Linux x64 archive | `openai-codex-proxy-0.1.0-linux-x64.tar.gz` |
+| Linux ARM64 archive | `openai-codex-proxy-0.1.0-linux-arm64.tar.gz` |
+| macOS Intel archive | `openai-codex-proxy-0.1.0-macos-x64.tar.gz` |
+| macOS Apple Silicon archive | `openai-codex-proxy-0.1.0-macos-arm64.tar.gz` |
+| Windows x64 archive | `openai-codex-proxy-0.1.0-windows-x64.zip` |
+| Windows ARM64 archive | `openai-codex-proxy-0.1.0-windows-arm64.zip` |
 | Checksums | `SHA256SUMS` |
 
 ### Start the proxy
@@ -153,6 +153,8 @@ openai-codex-proxy tray
 Opening a release AppImage without arguments also starts tray mode.
 
 The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
+
+The tray status icon and menu action icons are bundled with the project instead of relying on desktop-theme icon names. AppImage launcher metadata also uses the bundled project icon.
 
 Use **Copy Base URL**, **Copy API Key**, or **Copy Client Settings** to configure clients. The default copied settings are:
 
@@ -300,12 +302,12 @@ git push origin v0.1.0
 
 You can also rerun the release workflow manually for an existing tag from the GitHub Actions UI.
 
-The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Opening a release AppImage without arguments launches the tray controller; CLI subcommands still work by passing arguments. Each archive includes the binary, `README.md`, and `LICENSE`. Asset filenames omit the release tag and commit hash because those are already part of the GitHub release page.
+The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Opening a release AppImage without arguments launches the tray controller; CLI subcommands still work by passing arguments. Each archive includes the binary, `README.md`, and `LICENSE`. Stable asset filenames include the semver release number, while automatic `main` prerelease filenames use the Cargo package version plus `main.<ci-run>.<attempt>` and omit commit hashes.
 
 Release assets include one combined `SHA256SUMS` file instead of separate checksum files for every binary. The workflow also generates GitHub artifact attestations for each binary archive, each AppImage, and `SHA256SUMS`; verify them with:
 
 ```bash
-gh attestation verify openai-codex-proxy-linux-x64.tar.gz \
+gh attestation verify openai-codex-proxy-0.1.0-linux-x64.tar.gz \
   -R harshithkashyap/openai-codex-proxy
 ```
 

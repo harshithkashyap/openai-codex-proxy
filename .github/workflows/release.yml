@@ -42,6 +42,7 @@ jobs:
       release_ref: ${{ steps.release.outputs.release_ref }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_title: ${{ steps.release.outputs.release_title }}
+      asset_version: ${{ steps.release.outputs.asset_version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - name: Check out repository
@@ -62,17 +63,24 @@ jobs:
           WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -euo pipefail
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "${package_version}" ]]; then
+            echo "Could not resolve package version from Cargo.toml" >&2
+            exit 1
+          fi
 
           if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
             release_ref="${WORKFLOW_HEAD_SHA}"
             short_sha="${WORKFLOW_HEAD_SHA:0:12}"
             release_tag="main-${WORKFLOW_RUN_NUMBER}-${WORKFLOW_RUN_ATTEMPT}-${short_sha}"
             release_title="Main build ${short_sha}"
+            asset_version="${package_version}-main.${WORKFLOW_RUN_NUMBER}.${WORKFLOW_RUN_ATTEMPT}"
             prerelease="true"
           else
             release_tag="${DISPATCH_TAG:-${REF_NAME}}"
             release_ref="${release_tag}"
             release_title="${release_tag}"
+            asset_version="${release_tag#v}"
             prerelease="false"
           fi
 
@@ -80,6 +88,7 @@ jobs:
             echo "release_ref=${release_ref}"
             echo "release_tag=${release_tag}"
             echo "release_title=${release_title}"
+            echo "asset_version=${asset_version}"
             echo "prerelease=${prerelease}"
           } >> "${GITHUB_OUTPUT}"
 
@@ -218,11 +227,12 @@ jobs:
         id: package-unix
         shell: bash
         env:
+          ASSET_VERSION: ${{ needs.prepare.outputs.asset_version }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          asset="${BIN_NAME}-${ASSET_SUFFIX}"
+          asset="${BIN_NAME}-${ASSET_VERSION}-${ASSET_SUFFIX}"
           archive="${asset}.tar.gz"
           mkdir -p "dist/${asset}"
           cp "target/${TARGET}/release/${BIN_NAME}" "dist/${asset}/"
@@ -236,12 +246,13 @@ jobs:
         shell: bash
         env:
           APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
+          ASSET_VERSION: ${{ needs.prepare.outputs.asset_version }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
 
-          asset="${BIN_NAME}-${ASSET_SUFFIX}"
+          asset="${BIN_NAME}-${ASSET_VERSION}-${ASSET_SUFFIX}"
           appdir="dist/${asset}.AppDir"
           appimage="dist/${asset}.AppImage"
           appimagetool="dist/appimagetool-${APPIMAGE_ARCH}.AppImage"
@@ -250,7 +261,7 @@ jobs:
             "${appdir}/usr/bin" \
             "${appdir}/usr/share/applications" \
             "${appdir}/usr/share/doc/${BIN_NAME}" \
-            "${appdir}/usr/share/icons/hicolor/scalable/apps"
+            "${appdir}/usr/share/icons/hicolor"
 
           cp "target/${TARGET}/release/${BIN_NAME}" "${appdir}/usr/bin/${BIN_NAME}"
           cp README.md LICENSE "${appdir}/usr/share/doc/${BIN_NAME}/"
@@ -277,16 +288,8 @@ jobs:
           Terminal=false
           DESKTOP_ENTRY
           cp "${appdir}/${BIN_NAME}.desktop" "${appdir}/usr/share/applications/${BIN_NAME}.desktop"
-
-          cat > "${appdir}/${BIN_NAME}.svg" <<'SVG_ICON'
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-            <rect width="256" height="256" rx="48" fill="#111827"/>
-            <path d="M66 78h124v100H66z" fill="none" stroke="#e5e7eb" stroke-width="14" stroke-linejoin="round"/>
-            <path d="M92 112h72M92 144h44" fill="none" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
-            <path d="M54 198h148" fill="none" stroke="#e5e7eb" stroke-width="14" stroke-linecap="round"/>
-          </svg>
-          SVG_ICON
-          cp "${appdir}/${BIN_NAME}.svg" "${appdir}/usr/share/icons/hicolor/scalable/apps/${BIN_NAME}.svg"
+          cp "assets/icons/hicolor/256x256/apps/${BIN_NAME}.png" "${appdir}/${BIN_NAME}.png"
+          cp -R assets/icons/hicolor/* "${appdir}/usr/share/icons/hicolor/"
 
           curl -fsSL \
             -o "${appimagetool}" \
@@ -302,10 +305,11 @@ jobs:
         id: package-windows
         shell: pwsh
         env:
+          ASSET_VERSION: ${{ needs.prepare.outputs.asset_version }}
           ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
-          $asset = "${env:BIN_NAME}-${env:ASSET_SUFFIX}"
+          $asset = "${env:BIN_NAME}-${env:ASSET_VERSION}-${env:ASSET_SUFFIX}"
           $archive = "${asset}.zip"
           New-Item -ItemType Directory -Force -Path "dist/${asset}" | Out-Null
           Copy-Item "target/${env:TARGET}/release/${env:BIN_NAME}.exe" "dist/${asset}/"
