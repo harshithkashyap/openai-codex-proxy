@@ -1,12 +1,12 @@
 use serde_json::{Map, Value};
 
-use crate::config::DEFAULT_REASONING_EFFORT;
 use crate::errors::ProxyError;
 use crate::models::supports_codex_reasoning_metadata;
 
 pub(crate) fn apply_default_reasoning_effort(
     model: &str,
     responses_body: &mut Value,
+    default_reasoning_effort: &str,
 ) -> Result<Option<String>, ProxyError> {
     if !supports_codex_reasoning_metadata(model) {
         return Ok(None);
@@ -20,7 +20,7 @@ pub(crate) fn apply_default_reasoning_effort(
     if reasoning.get("effort").and_then(Value::as_str).is_none() {
         reasoning.insert(
             "effort".to_string(),
-            Value::String(DEFAULT_REASONING_EFFORT.to_string()),
+            Value::String(default_reasoning_effort.to_string()),
         );
     }
 

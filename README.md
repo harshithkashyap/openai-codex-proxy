@@ -38,10 +38,10 @@ This project should become less important if first-party Codex desktop support c
 - Refresh preserves unknown Codex auth fields and keeps `tokens.account_id` aligned with refreshed token claims
 - Local proxy config for generated downstream API keys
 - Local HTTP server
-- Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, copyable client settings, bundled project icons, proxy status, release version, start/stop actions, and log opening
+- Linux system tray controller with ChatGPT login/logout, connected status, generated local API key, selectable default model/reasoning effort, copyable client settings, bundled project icons, proxy status, release version, start/stop actions, and log opening
 - `GET /health`
 - `GET /v1/models` using a configurable advertised model list, with Codex-style reasoning/verbosity/Fast service-tier metadata for GPT-5/Codex models
-- `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`, with GPT-5/Codex-family requests defaulting to `reasoning.effort: "xhigh"` when the client omits reasoning effort
+- `POST /v1/responses` streaming proxy to `https://chatgpt.com/backend-api/codex/responses`, with configurable default model and GPT-5/Codex-family reasoning effort when the client omits them
 - `POST /v1/responses/compact` pass-through proxy to `https://chatgpt.com/backend-api/codex/responses/compact`
 - Selected Codex/OpenAI pass-through headers, including session/thread metadata, attestation, tracing, compression, rate-limit, and usage-window headers
 - Restricted ChatGPT Cloudflare infrastructure cookie store for upstream requests only
@@ -57,7 +57,7 @@ The proxy intentionally keeps `/v1/responses` and `/v1/responses/compact` as clo
 - Structured outputs, audio content parts, legacy `functions` fields, and other advanced `/v1/chat/completions` translation. Use `/v1/responses` for those request shapes.
 - `/v1/chat/completions` stream usage chunks from `stream_options` are not synthesized.
 - Anthropic compatibility is intentionally narrow. It supports message text, image blocks, tool use/tool results, streaming, non-streaming aggregation, and a rough local token count estimate, not every Claude API field or exact usage accounting.
-- Some clients hardcode thinking/reasoning controls from their own model catalog. `/v1/models` advertises Codex-compatible reasoning metadata, but a client may still hide its UI control for custom providers. For GPT-5/Codex-family Responses, Chat Completions, and Anthropic-compatible requests, the proxy still applies `reasoning.effort: "xhigh"` upstream when the client omits reasoning effort.
+- Some clients hardcode thinking/reasoning controls from their own model catalog. `/v1/models` advertises Codex-compatible reasoning metadata, but a client may still hide its UI control for custom providers. For GPT-5/Codex-family Responses, Chat Completions, and Anthropic-compatible requests, the proxy still applies the configured default reasoning effort upstream when the client omits reasoning effort.
 - Full OpenAI response-shape normalization for every endpoint.
 - `/v1/embeddings`, `/v1/images`, `/v1/audio`, etc.
 - OS keychain storage in this proxy. Use Codex itself if your Codex auth is keychain-backed.
@@ -152,7 +152,9 @@ openai-codex-proxy tray
 
 Opening a release AppImage without arguments also starts tray mode.
 
-The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
+The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, default model, default reasoning effort, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
+
+Use the tray's default model and default reasoning radio groups to choose values used only when a downstream client omits those fields. Client-provided `model`, `reasoning.effort`, `reasoning_effort`, or `reasoningEffort` values still win. If the proxy is already running, changed defaults are saved immediately and apply the next time you stop and start the proxy.
 
 The tray status icon and menu action icons are bundled with the project instead of relying on desktop-theme icon names. AppImage launcher metadata also uses the bundled project icon.
 
@@ -164,7 +166,7 @@ API key: <generated local proxy key>
 Authorization: Bearer <generated local proxy key>
 ```
 
-The tray stores the generated local proxy API key in the user config directory, normally `~/.config/openai-codex-proxy/config.json`, with owner-only file permissions on Unix. Override that path with `CODEX_PROXY_CONFIG_FILE`. The tray does not display ChatGPT OAuth tokens or the local API key in the menu; it only copies the local API key when requested. Clipboard copy uses `wl-copy`, `xclip`, or `xsel`, so install one of those utilities if copy actions report that no clipboard command is available.
+The tray stores the generated local proxy API key and selected defaults in the user config directory, normally `~/.config/openai-codex-proxy/config.json`, with owner-only file permissions on Unix. Override that path with `CODEX_PROXY_CONFIG_FILE`. The tray does not display ChatGPT OAuth tokens or the local API key in the menu; it only copies the local API key when requested. Clipboard copy uses `wl-copy`, `xclip`, or `xsel`, so install one of those utilities if copy actions report that no clipboard command is available.
 
 The tray starts stopped; it does not autostart the proxy, install a daemon, or persist a background service after Quit.
 
@@ -240,6 +242,14 @@ CODEX_PROXY_MODELS=gpt-5.5,gpt-5.4 openai-codex-proxy serve --local-api-key loca
 ```
 
 `/v1/models` is an advertised compatibility catalog for clients. It does not query a live ChatGPT entitlement catalog; unsupported models will fail at the upstream Codex backend if your account cannot use them.
+
+Set defaults used when downstream clients omit `model` or reasoning effort:
+
+```bash
+CODEX_PROXY_DEFAULT_MODEL=gpt-5.4 CODEX_PROXY_DEFAULT_REASONING_EFFORT=high openai-codex-proxy serve --local-api-key local-dev-secret
+```
+
+The default model is applied only to requests without a `model`. The default reasoning effort is applied only to GPT-5/Codex-family requests without `reasoning.effort`, `reasoning_effort`, or `reasoningEffort`.
 
 Enable Codex Fast mode by setting the service tier to `fast` or `priority`:
 

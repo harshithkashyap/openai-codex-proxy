@@ -13,6 +13,10 @@ pub(crate) const CONFIG_FILE_ENV: &str = "CODEX_PROXY_CONFIG_FILE";
 pub(crate) struct LocalConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) local_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default_reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

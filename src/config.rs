@@ -37,3 +37,26 @@ pub(crate) const UNSUPPORTED_CHAT_FIELDS: &[&str] = &[
 pub(crate) fn build_version() -> &'static str {
     option_env!("CODEX_PROXY_BUILD_TAG").unwrap_or(env!("CARGO_PKG_VERSION"))
 }
+
+pub(crate) fn configured_default_model(value: Option<String>) -> String {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string()
+}
+
+pub(crate) fn configured_default_reasoning_effort(value: Option<String>) -> String {
+    let value = value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_REASONING_EFFORT);
+
+    if SUPPORTED_REASONING_EFFORTS.contains(&value) {
+        value.to_string()
+    } else {
+        DEFAULT_REASONING_EFFORT.to_string()
+    }
+}

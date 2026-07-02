@@ -9,6 +9,8 @@ pub(crate) struct TrayConfig {
     pub(crate) allow_no_local_api_key: bool,
     pub(crate) models: Vec<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) default_model: Option<String>,
+    pub(crate) default_reasoning_effort: Option<String>,
 }
 
 pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
@@ -25,6 +27,8 @@ pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
             allow_no_local_api_key,
             models,
             service_tier,
+            default_model,
+            default_reasoning_effort,
         } = config;
         let _ = (
             addr,
@@ -32,6 +36,8 @@ pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
             allow_no_local_api_key,
             models,
             service_tier,
+            default_model,
+            default_reasoning_effort,
         );
         Err(anyhow::anyhow!(
             "system tray mode is currently supported on Linux desktops with StatusNotifier/AppIndicator support"
@@ -45,22 +51,42 @@ mod linux {
     use std::process::Stdio;
 
     use anyhow::{Context, Result};
-    use ksni::menu::StandardItem;
+    use ksni::menu::{RadioGroup, RadioItem, StandardItem};
     use ksni::{Icon, MenuItem, Status, ToolTip, Tray, TrayMethods};
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
 
     use super::TrayConfig;
     use crate::auth::{AuthManager, StoredAuth, login_browser};
-    use crate::config::{DEFAULT_OAUTH_CALLBACK_PORT, build_version};
-    use crate::local_config::{LocalApiKeySource, ensure_local_api_key};
+    use crate::config::{
+        DEFAULT_MODEL, DEFAULT_OAUTH_CALLBACK_PORT, SUPPORTED_REASONING_EFFORTS, build_version,
+        configured_default_model, configured_default_reasoning_effort,
+    };
+    use crate::local_config::{
+        LocalApiKeySource, ensure_local_api_key, load_local_config_from_path,
+        save_local_config_to_path,
+    };
     use crate::logging::compat_log_file;
-    use crate::server::serve_until_shutdown;
+    use crate::server::{ServerConfig, serve_until_shutdown};
 
     pub(super) async fn run(mut config: TrayConfig) -> Result<()> {
         let local_key = ensure_local_api_key(config.local_api_key.clone()).await?;
         config.local_api_key = Some(local_key.value.clone());
         config.allow_no_local_api_key = false;
+        let config_path = local_key.config_path.clone();
+        let local_config = load_local_config_from_path(&config_path).await?;
+        config.default_model = Some(configured_default_model(
+            config
+                .default_model
+                .clone()
+                .or_else(|| local_config.default_model.clone()),
+        ));
+        config.default_reasoning_effort = Some(configured_default_reasoning_effort(
+            config
+                .default_reasoning_effort
+                .clone()
+                .or_else(|| local_config.default_reasoning_effort.clone()),
+        ));
 
         let auth = AuthManager::new().await?;
         let auth_status = auth_status_from(auth.cached().await);
@@ -73,7 +99,7 @@ mod linux {
             LocalApiKeySource::Provided => "Using configured local proxy API key".into(),
         };
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
-        let config_for_server = config.clone();
+        let mut config_for_server = config.clone();
         let tray = ProxyTray {
             config,
             status: ProxyStatus::Stopped,
@@ -119,11 +145,15 @@ mod linux {
 
                     let task = tokio::spawn(async move {
                         let result = serve_until_shutdown(
-                            server_config.addr,
-                            server_config.local_api_key,
-                            server_config.allow_no_local_api_key,
-                            server_config.models,
-                            server_config.service_tier,
+                            ServerConfig {
+                                addr: server_config.addr,
+                                local_api_key: server_config.local_api_key,
+                                allow_no_local_api_key: server_config.allow_no_local_api_key,
+                                models: server_config.models,
+                                service_tier: server_config.service_tier,
+                                default_model: server_config.default_model,
+                                default_reasoning_effort: server_config.default_reasoning_effort,
+                            },
                             async {
                                 let _ = shutdown_rx.await;
                             },
@@ -240,6 +270,38 @@ mod linux {
                     let message = copy_to_clipboard(&settings, "client settings");
                     set_last_message(&handle, message).await;
                 }
+                TrayCommand::SetDefaultModel(model) => {
+                    let model = configured_default_model(Some(model));
+                    config_for_server.default_model = Some(model.clone());
+                    let message = match save_default_model(&config_path, &model).await {
+                        Ok(()) if running.is_some() => {
+                            format!("Default model set to {model}; restart proxy to apply")
+                        }
+                        Ok(()) => format!("Default model set to {model}"),
+                        Err(err) => format!(
+                            "Could not save default model {}: {}",
+                            model,
+                            clip(&err.to_string(), 96)
+                        ),
+                    };
+                    set_last_message(&handle, message).await;
+                }
+                TrayCommand::SetDefaultReasoningEffort(effort) => {
+                    let effort = configured_default_reasoning_effort(Some(effort));
+                    config_for_server.default_reasoning_effort = Some(effort.clone());
+                    let message = match save_default_reasoning_effort(&config_path, &effort).await {
+                        Ok(()) if running.is_some() => {
+                            format!("Default reasoning set to {effort}; restart proxy to apply")
+                        }
+                        Ok(()) => format!("Default reasoning set to {effort}"),
+                        Err(err) => format!(
+                            "Could not save default reasoning {}: {}",
+                            effort,
+                            clip(&err.to_string(), 96)
+                        ),
+                    };
+                    set_last_message(&handle, message).await;
+                }
                 TrayCommand::OpenLogs => {
                     let message = open_logs();
                     set_last_message(&handle, message).await;
@@ -303,6 +365,8 @@ mod linux {
         CopyBaseUrl,
         CopyApiKey,
         CopyClientSettings,
+        SetDefaultModel(String),
+        SetDefaultReasoningEffort(String),
         OpenLogs,
         Quit,
         ServerReady(std::net::SocketAddr),
@@ -488,6 +552,84 @@ mod linux {
             }
             .into()
         }
+
+        fn default_model(&self) -> String {
+            configured_default_model(self.config.default_model.clone())
+        }
+
+        fn default_reasoning_effort(&self) -> String {
+            configured_default_reasoning_effort(self.config.default_reasoning_effort.clone())
+        }
+
+        fn model_choices(&self) -> Vec<String> {
+            let mut choices = if self.config.models.is_empty() {
+                vec![DEFAULT_MODEL.to_string()]
+            } else {
+                self.config.models.clone()
+            };
+            let selected = self.default_model();
+            if !choices.iter().any(|model| model == &selected) {
+                choices.push(selected);
+            }
+            choices
+        }
+
+        fn default_model_menu(&self) -> MenuItem<Self> {
+            let choices = self.model_choices();
+            let selected_model = self.default_model();
+            let selected = choices
+                .iter()
+                .position(|model| model == &selected_model)
+                .unwrap_or_default();
+
+            RadioGroup {
+                selected,
+                select: Box::new(|tray: &mut Self, index: usize| {
+                    let choices = tray.model_choices();
+                    if let Some(model) = choices.get(index).cloned() {
+                        tray.config.default_model = Some(model.clone());
+                        tray.last_message = Some(format!("Saving default model: {model}"));
+                        tray.send_command(TrayCommand::SetDefaultModel(model));
+                    }
+                }),
+                options: choices
+                    .into_iter()
+                    .map(|model| RadioItem {
+                        label: model,
+                        ..Default::default()
+                    })
+                    .collect(),
+            }
+            .into()
+        }
+
+        fn default_reasoning_menu(&self) -> MenuItem<Self> {
+            let selected_effort = self.default_reasoning_effort();
+            let selected = SUPPORTED_REASONING_EFFORTS
+                .iter()
+                .position(|effort| *effort == selected_effort)
+                .unwrap_or_default();
+
+            RadioGroup {
+                selected,
+                select: Box::new(|tray: &mut Self, index: usize| {
+                    if let Some(effort) = SUPPORTED_REASONING_EFFORTS.get(index) {
+                        let effort = (*effort).to_string();
+                        tray.config.default_reasoning_effort = Some(effort.clone());
+                        tray.last_message = Some(format!("Saving default reasoning: {effort}"));
+                        tray.send_command(TrayCommand::SetDefaultReasoningEffort(effort));
+                    }
+                }),
+                options: SUPPORTED_REASONING_EFFORTS
+                    .iter()
+                    .map(|effort| RadioItem {
+                        label: (*effort).to_string(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            }
+            .into()
+        }
     }
 
     impl Tray for ProxyTray {
@@ -548,10 +690,26 @@ mod linux {
                 Self::disabled_item(format!("Release: {}", build_version())),
                 Self::disabled_item(format!("Base URL: {}", base_url(self.config.addr))),
                 Self::disabled_item("Local API key: configured"),
+                Self::disabled_item(format!("Default model: {}", self.default_model())),
+                Self::disabled_item(format!(
+                    "Default reasoning: {}",
+                    self.default_reasoning_effort()
+                )),
             ];
 
             if let Some(message) = self.last_message.as_deref() {
                 items.push(Self::disabled_item(format!("Last: {}", clip(message, 96))));
+            }
+
+            items.extend([
+                MenuItem::Separator,
+                Self::disabled_item("Default model"),
+                self.default_model_menu(),
+                Self::disabled_item("Default reasoning"),
+                self.default_reasoning_menu(),
+            ]);
+            if self.status.can_stop() {
+                items.push(Self::disabled_item("Default changes apply after restart"));
             }
 
             items.extend([
@@ -906,6 +1064,18 @@ mod linux {
             local_api_key,
             local_api_key
         )
+    }
+
+    async fn save_default_model(path: &std::path::Path, model: &str) -> Result<()> {
+        let mut config = load_local_config_from_path(path).await?;
+        config.default_model = Some(model.to_string());
+        save_local_config_to_path(path, &config).await
+    }
+
+    async fn save_default_reasoning_effort(path: &std::path::Path, effort: &str) -> Result<()> {
+        let mut config = load_local_config_from_path(path).await?;
+        config.default_reasoning_effort = Some(effort.to_string());
+        save_local_config_to_path(path, &config).await
     }
 
     fn copy_to_clipboard(value: &str, label: &str) -> String {

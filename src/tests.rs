@@ -269,7 +269,8 @@ fn anthropic_messages_request_maps_opus_alias_to_codex_chat_shape() {
         "tool_choice": {"type": "tool", "name": "lookup"}
     });
 
-    let chat = anthropic_to_chat_input(&input).expect("anthropic request should translate");
+    let chat =
+        anthropic_to_chat_input(&input, DEFAULT_MODEL).expect("anthropic request should translate");
 
     assert_eq!(chat["model"], "gpt-5.5");
     assert_eq!(chat["messages"][0]["role"], "system");
@@ -285,7 +286,8 @@ fn anthropic_messages_request_gets_default_codex_reasoning_effort() {
         "messages": [{"role": "user", "content": "Hello"}]
     });
 
-    let chat = anthropic_to_chat_input(&input).expect("anthropic request should translate");
+    let chat =
+        anthropic_to_chat_input(&input, DEFAULT_MODEL).expect("anthropic request should translate");
     let (_, body) = build_responses_body_from_chat(&chat).expect("chat should translate");
 
     assert_eq!(body["model"].as_str(), Some("gpt-5.5"));
@@ -293,6 +295,18 @@ fn anthropic_messages_request_gets_default_codex_reasoning_effort() {
         body["reasoning"]["effort"].as_str(),
         Some(DEFAULT_REASONING_EFFORT)
     );
+}
+
+#[test]
+fn anthropic_messages_request_uses_configured_default_model_when_model_is_omitted() {
+    let input = json!({
+        "messages": [{"role": "user", "content": "Hello"}]
+    });
+
+    let chat =
+        anthropic_to_chat_input(&input, "gpt-5.4").expect("anthropic request should translate");
+
+    assert_eq!(chat["model"], "gpt-5.4");
 }
 
 #[test]
@@ -363,7 +377,8 @@ fn responses_body_applies_default_reasoning_effort_for_codex_models() {
     );
 
     let (body, reasoning_effort) =
-        apply_default_reasoning_to_responses_body(body).expect("body should map");
+        apply_default_reasoning_to_responses_body(body, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT)
+            .expect("body should map");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
 
     assert_eq!(reasoning_effort.as_deref(), Some(DEFAULT_REASONING_EFFORT));
@@ -371,6 +386,44 @@ fn responses_body_applies_default_reasoning_effort_for_codex_models() {
         body["reasoning"]["effort"].as_str(),
         Some(DEFAULT_REASONING_EFFORT)
     );
+}
+
+#[test]
+fn responses_body_applies_configured_defaults_when_model_is_omitted() {
+    let body = Bytes::from(
+        json!({
+            "input": "Hello"
+        })
+        .to_string(),
+    );
+
+    let (body, reasoning_effort) =
+        apply_default_reasoning_to_responses_body(body, "gpt-5.4", "high")
+            .expect("body should map");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
+
+    assert_eq!(body["model"].as_str(), Some("gpt-5.4"));
+    assert_eq!(reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("high"));
+}
+
+#[test]
+fn responses_body_applies_non_codex_default_model_without_reasoning() {
+    let body = Bytes::from(
+        json!({
+            "input": "Hello"
+        })
+        .to_string(),
+    );
+
+    let (body, reasoning_effort) =
+        apply_default_reasoning_to_responses_body(body, "gpt-4.1", DEFAULT_REASONING_EFFORT)
+            .expect("body should map");
+    let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
+
+    assert_eq!(body["model"].as_str(), Some("gpt-4.1"));
+    assert_eq!(reasoning_effort, None);
+    assert!(body.get("reasoning").is_none());
 }
 
 #[test]
@@ -385,7 +438,8 @@ fn responses_body_preserves_explicit_reasoning_effort() {
     );
 
     let (body, reasoning_effort) =
-        apply_default_reasoning_to_responses_body(body).expect("body should map");
+        apply_default_reasoning_to_responses_body(body, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT)
+            .expect("body should map");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
 
     assert_eq!(reasoning_effort.as_deref(), Some("low"));
@@ -421,7 +475,8 @@ fn responses_body_skips_default_reasoning_effort_for_unknown_models() {
     );
 
     let (body, reasoning_effort) =
-        apply_default_reasoning_to_responses_body(body).expect("body should map");
+        apply_default_reasoning_to_responses_body(body, DEFAULT_MODEL, DEFAULT_REASONING_EFFORT)
+            .expect("body should map");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("body should parse");
 
     assert_eq!(reasoning_effort, None);
@@ -553,6 +608,21 @@ fn chat_shim_defaults_to_current_model_when_model_is_omitted() {
 }
 
 #[test]
+fn chat_shim_uses_configured_default_model_when_model_is_omitted() {
+    let input = json!({
+        "messages": [{ "role": "user", "content": "Hello" }]
+    });
+
+    let (model, body) =
+        build_responses_body_from_chat_with_defaults(&input, "gpt-5.4", "high", None)
+            .expect("chat should translate");
+
+    assert_eq!(model, "gpt-5.4");
+    assert_eq!(body["model"].as_str(), Some("gpt-5.4"));
+    assert_eq!(body["reasoning"]["effort"].as_str(), Some("high"));
+}
+
+#[test]
 fn chat_shim_applies_default_reasoning_effort_for_codex_models() {
     let input = json!({
         "model": "gpt-5.5",
@@ -582,7 +652,7 @@ fn chat_shim_preserves_explicit_reasoning_effort() {
 
 #[test]
 fn model_catalog_advertises_codex_reasoning_metadata() {
-    let model = model_catalog_entry("gpt-5.5", None);
+    let model = model_catalog_entry("gpt-5.5", None, DEFAULT_REASONING_EFFORT);
 
     assert_eq!(model["id"].as_str(), Some("gpt-5.5"));
     assert_eq!(
@@ -627,8 +697,15 @@ fn model_catalog_advertises_codex_reasoning_metadata() {
 }
 
 #[test]
+fn model_catalog_advertises_configured_default_reasoning_effort() {
+    let model = model_catalog_entry("gpt-5.5", None, "high");
+
+    assert_eq!(model["default_reasoning_level"].as_str(), Some("high"));
+}
+
+#[test]
 fn model_catalog_advertises_configured_default_service_tier() {
-    let model = model_catalog_entry("gpt-5.5", Some("fast"));
+    let model = model_catalog_entry("gpt-5.5", Some("fast"), DEFAULT_REASONING_EFFORT);
 
     assert_eq!(
         model["default_service_tier"].as_str(),
@@ -638,7 +715,7 @@ fn model_catalog_advertises_configured_default_service_tier() {
 
 #[test]
 fn model_catalog_does_not_overclaim_unknown_model_reasoning() {
-    let model = model_catalog_entry("gpt-4.1", Some("fast"));
+    let model = model_catalog_entry("gpt-4.1", Some("fast"), DEFAULT_REASONING_EFFORT);
 
     assert!(model.get("supported_reasoning_levels").is_none());
     assert!(model.get("capabilities").is_none());

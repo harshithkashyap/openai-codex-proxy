@@ -7,8 +7,8 @@ use axum::response::IntoResponse;
 use serde_json::{Value, json};
 
 use crate::config::{
-    DEFAULT_ADVERTISED_MODELS, DEFAULT_REASONING_EFFORT, DEFAULT_VERBOSITY,
-    SUPPORTED_REASONING_EFFORTS, SUPPORTED_VERBOSITIES,
+    DEFAULT_ADVERTISED_MODELS, DEFAULT_VERBOSITY, SUPPORTED_REASONING_EFFORTS,
+    SUPPORTED_VERBOSITIES,
 };
 use crate::server::AppState;
 use crate::service_tier::{
@@ -28,6 +28,7 @@ pub(crate) async fn models_handler(
         ModelResponseFormat::OpenAi => Json(openai_models_payload(
             &state.models,
             state.service_tier.as_deref(),
+            &state.default_reasoning_effort,
         )),
         ModelResponseFormat::Anthropic => Json(anthropic_models_payload(&state.models)),
     }
@@ -64,11 +65,14 @@ pub(crate) fn is_anthropic_format_value(value: &str) -> bool {
 pub(crate) fn openai_models_payload(
     models: &[String],
     default_service_tier: Option<&str>,
+    default_reasoning_effort: &str,
 ) -> Value {
     let data = models
         .iter()
         .filter(|model| !model.trim().is_empty())
-        .map(|model| model_catalog_entry(model.trim(), default_service_tier))
+        .map(|model| {
+            model_catalog_entry(model.trim(), default_service_tier, default_reasoning_effort)
+        })
         .collect::<Vec<_>>();
     json!({
         "object": "list",
@@ -142,7 +146,11 @@ pub(crate) fn codex_model_for_anthropic_alias(model: &str) -> &str {
     }
 }
 
-pub(crate) fn model_catalog_entry(model: &str, default_service_tier: Option<&str>) -> Value {
+pub(crate) fn model_catalog_entry(
+    model: &str,
+    default_service_tier: Option<&str>,
+    default_reasoning_effort: &str,
+) -> Value {
     let mut entry = json!({
         "id": model,
         "object": "model",
@@ -172,7 +180,7 @@ pub(crate) fn model_catalog_entry(model: &str, default_service_tier: Option<&str
         );
         object.insert(
             "default_reasoning_level".to_string(),
-            Value::String(DEFAULT_REASONING_EFFORT.to_string()),
+            Value::String(default_reasoning_effort.to_string()),
         );
         object.insert(
             "supported_reasoning_levels".to_string(),

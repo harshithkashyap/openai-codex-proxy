@@ -52,7 +52,11 @@ pub(crate) async fn forward_codex_responses(
 ) -> Result<Response<Body>, ProxyError> {
     let original_body_len = body.len();
     let (body, reasoning_effort) = if upstream_url == CODEX_RESPONSES_URL {
-        apply_default_reasoning_to_responses_body(body)?
+        apply_default_reasoning_to_responses_body(
+            body,
+            &state.default_model,
+            &state.default_reasoning_effort,
+        )?
     } else {
         (body, None)
     };
@@ -135,27 +139,39 @@ pub(crate) async fn forward_codex_responses(
 
 pub(crate) fn apply_default_reasoning_to_responses_body(
     body: Bytes,
+    default_model: &str,
+    default_reasoning_effort: &str,
 ) -> Result<(Bytes, Option<String>), ProxyError> {
     let mut value: Value = serde_json::from_slice(&body)
         .map_err(|err| ProxyError::bad_request(format!("invalid JSON request body: {err}")))?;
     let object = value
-        .as_object()
+        .as_object_mut()
         .ok_or_else(|| ProxyError::bad_request("responses request body must be a JSON object"))?;
-    let Some(model) = object
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    else {
-        return Ok((body, None));
+    let mut changed = false;
+    let model = match object.get("model").and_then(Value::as_str) {
+        Some(model) => model.to_string(),
+        None => {
+            object.insert(
+                "model".to_string(),
+                Value::String(default_model.to_string()),
+            );
+            changed = true;
+            default_model.to_string()
+        }
     };
 
-    let reasoning_effort = apply_default_reasoning_effort(&model, &mut value)?;
-    let Some(reasoning_effort) = reasoning_effort else {
+    if model.trim().is_empty() {
         return Ok((body, None));
-    };
+    }
+
+    let reasoning_effort =
+        apply_default_reasoning_effort(&model, &mut value, default_reasoning_effort)?;
+    if reasoning_effort.is_none() && !changed {
+        return Ok((body, None));
+    }
 
     let body = serde_json::to_vec(&value).map_err(ProxyError::upstream)?;
-    Ok((Bytes::from(body), Some(reasoning_effort)))
+    Ok((Bytes::from(body), reasoning_effort))
 }
 
 pub(crate) fn passthrough_request_headers() -> &'static [&'static str] {

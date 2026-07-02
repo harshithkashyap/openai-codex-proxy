@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use tracing::error;
 
 use crate::chat::{
-    build_responses_body_from_chat_with_service_tier, extract_chat_message_from_responses,
+    build_responses_body_from_chat_with_defaults, extract_chat_message_from_responses,
     parse_sse_frame, response_function_call_to_chat_tool_call,
 };
 use crate::config::{CODEX_RESPONSES_URL, ORIGINATOR};
@@ -59,15 +59,17 @@ pub(crate) async fn anthropic_messages_impl(
     let requested_model = input
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or("claude-opus-4-1-20250805")
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| state.default_model.clone());
     let stream = input
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let chat_input = anthropic_to_chat_input(&input)?;
-    let (codex_model, mut responses_body) = build_responses_body_from_chat_with_service_tier(
+    let chat_input = anthropic_to_chat_input(&input, &state.default_model)?;
+    let (codex_model, mut responses_body) = build_responses_body_from_chat_with_defaults(
         &chat_input,
+        &state.default_model,
+        &state.default_reasoning_effort,
         state.service_tier.as_deref(),
     )?;
     // The ChatGPT Codex Responses backend requires streaming. For non-streaming
@@ -320,12 +322,15 @@ pub(crate) async fn stream_anthropic_messages(
         .map_err(ProxyError::upstream)
 }
 
-pub(crate) fn anthropic_to_chat_input(input: &Value) -> Result<Value, ProxyError> {
-    let requested_model = input
+pub(crate) fn anthropic_to_chat_input(
+    input: &Value,
+    default_model: &str,
+) -> Result<Value, ProxyError> {
+    let codex_model = input
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or("claude-opus-4-1-20250805");
-    let codex_model = codex_model_for_anthropic_alias(requested_model);
+        .map(codex_model_for_anthropic_alias)
+        .unwrap_or(default_model);
     let mut messages = Vec::new();
 
     if let Some(system) = input.get("system") {

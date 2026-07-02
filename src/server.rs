@@ -18,7 +18,7 @@ use tracing::{Level, info, warn};
 use crate::anthropic::{anthropic_count_tokens, anthropic_messages};
 use crate::auth::AuthManager;
 use crate::chat::chat_completions;
-use crate::config::build_version;
+use crate::config::{build_version, configured_default_model, configured_default_reasoning_effort};
 use crate::cookies::with_chatgpt_cloudflare_cookie_store;
 use crate::errors::response_json;
 use crate::logging::{append_compat_log, compat_log_file, file_request_log};
@@ -33,6 +33,19 @@ pub(crate) struct AppState {
     pub(crate) local_api_key: Option<String>,
     pub(crate) models: Vec<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) default_model: String,
+    pub(crate) default_reasoning_effort: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ServerConfig {
+    pub(crate) addr: SocketAddr,
+    pub(crate) local_api_key: Option<String>,
+    pub(crate) allow_no_local_api_key: bool,
+    pub(crate) models: Vec<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) default_model: Option<String>,
+    pub(crate) default_reasoning_effort: Option<String>,
 }
 pub(crate) async fn require_local_api_key(
     State(state): State<Arc<AppState>>,
@@ -65,19 +78,9 @@ pub(crate) fn local_api_key_authorized(headers: &HeaderMap, expected: &str) -> b
         .is_some_and(|actual| actual == expected);
     bearer_ok || x_api_key_ok
 }
-pub(crate) async fn serve(
-    addr: SocketAddr,
-    local_api_key: Option<String>,
-    allow_no_local_api_key: bool,
-    models: Vec<String>,
-    service_tier: Option<String>,
-) -> Result<()> {
+pub(crate) async fn serve(config: ServerConfig) -> Result<()> {
     serve_until_shutdown(
-        addr,
-        local_api_key,
-        allow_no_local_api_key,
-        models,
-        service_tier,
+        config,
         async {
             let _ = tokio::signal::ctrl_c().await;
         },
@@ -87,31 +90,28 @@ pub(crate) async fn serve(
 }
 
 pub(crate) async fn serve_until_shutdown<F>(
-    addr: SocketAddr,
-    local_api_key: Option<String>,
-    allow_no_local_api_key: bool,
-    models: Vec<String>,
-    service_tier: Option<String>,
+    config: ServerConfig,
     shutdown: F,
     ready: Option<oneshot::Sender<SocketAddr>>,
 ) -> Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    let addr = config.addr;
     if !addr.ip().is_loopback() {
         warn!("binding to a non-loopback address");
-        if local_api_key.is_none() {
+        if config.local_api_key.is_none() {
             return Err(anyhow!(
                 "--local-api-key is required when binding outside loopback"
             ));
         }
     }
-    if local_api_key.is_none() && !allow_no_local_api_key {
+    if config.local_api_key.is_none() && !config.allow_no_local_api_key {
         return Err(anyhow!(
             "--local-api-key is required; pass --allow-no-local-api-key only for trusted loopback-only use"
         ));
     }
-    if local_api_key.is_none() && allow_no_local_api_key {
+    if config.local_api_key.is_none() && config.allow_no_local_api_key {
         warn!("no local API key configured; any local process can use the proxy");
     }
 
@@ -122,19 +122,24 @@ where
         ));
     }
 
+    let models = if config.models.is_empty() {
+        default_advertised_models()
+    } else {
+        config.models
+    };
     let state = Arc::new(AppState {
         auth,
         client: with_chatgpt_cloudflare_cookie_store(reqwest::Client::builder())
             .user_agent(format!("openai-codex-proxy/{}", build_version()))
             .timeout(Duration::from_secs(300))
             .build()?,
-        local_api_key,
-        models: if models.is_empty() {
-            default_advertised_models()
-        } else {
-            models
-        },
-        service_tier: configured_service_tier(service_tier),
+        local_api_key: config.local_api_key,
+        models,
+        service_tier: configured_service_tier(config.service_tier),
+        default_model: configured_default_model(config.default_model),
+        default_reasoning_effort: configured_default_reasoning_effort(
+            config.default_reasoning_effort,
+        ),
     });
 
     let app = Router::new()
@@ -170,6 +175,8 @@ where
                 "log_file": path.display().to_string(),
                 "models": state.models.clone(),
                 "service_tier": state.service_tier.clone(),
+                "default_model": state.default_model.clone(),
+                "default_reasoning_effort": state.default_reasoning_effort.clone(),
             }),
         );
     }

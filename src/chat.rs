@@ -12,7 +12,7 @@ use futures_util::{Stream, StreamExt};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use serde_json::{Value, json};
 
-use crate::config::{CODEX_RESPONSES_URL, DEFAULT_MODEL, ORIGINATOR, UNSUPPORTED_CHAT_FIELDS};
+use crate::config::{CODEX_RESPONSES_URL, ORIGINATOR, UNSUPPORTED_CHAT_FIELDS};
 use crate::errors::{ProxyError, response_json};
 use crate::logging::{
     append_compat_log, error_summary, sample_strings, tool_choice_summary, value_kind,
@@ -68,8 +68,12 @@ pub(crate) async fn chat_completions_impl(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let (model, mut responses_body) =
-        build_responses_body_from_chat_with_service_tier(&input, state.service_tier.as_deref())?;
+    let (model, mut responses_body) = build_responses_body_from_chat_with_defaults(
+        &input,
+        &state.default_model,
+        &state.default_reasoning_effort,
+        state.service_tier.as_deref(),
+    )?;
     if stream {
         responses_body["stream"] = Value::Bool(true);
         append_compat_log(
@@ -524,8 +528,23 @@ pub(crate) fn build_responses_body_from_chat(input: &Value) -> Result<(String, V
     build_responses_body_from_chat_with_service_tier(input, None)
 }
 
+#[cfg(test)]
 pub(crate) fn build_responses_body_from_chat_with_service_tier(
     input: &Value,
+    default_service_tier: Option<&str>,
+) -> Result<(String, Value), ProxyError> {
+    build_responses_body_from_chat_with_defaults(
+        input,
+        crate::config::DEFAULT_MODEL,
+        crate::config::DEFAULT_REASONING_EFFORT,
+        default_service_tier,
+    )
+}
+
+pub(crate) fn build_responses_body_from_chat_with_defaults(
+    input: &Value,
+    default_model: &str,
+    default_reasoning_effort: &str,
     default_service_tier: Option<&str>,
 ) -> Result<(String, Value), ProxyError> {
     reject_unsupported_chat_fields(input)?;
@@ -533,7 +552,7 @@ pub(crate) fn build_responses_body_from_chat_with_service_tier(
     let model = input
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or(DEFAULT_MODEL)
+        .unwrap_or(default_model)
         .to_string();
     let messages = input
         .get("messages")
@@ -554,7 +573,7 @@ pub(crate) fn build_responses_body_from_chat_with_service_tier(
         "store": false,
     });
     apply_chat_reasoning_and_text_options(input, &mut responses_body)?;
-    let _ = apply_default_reasoning_effort(&model, &mut responses_body)?;
+    let _ = apply_default_reasoning_effort(&model, &mut responses_body, default_reasoning_effort)?;
     apply_chat_tool_options(input, &mut responses_body)?;
     apply_chat_service_tier_option(input, &mut responses_body, default_service_tier)?;
     Ok((model, responses_body))

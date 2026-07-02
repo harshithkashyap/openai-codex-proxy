@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 use crate::auth::{AuthManager, login_browser, login_device, should_refresh};
 use crate::config::{DEFAULT_ADVERTISED_MODELS, DEFAULT_OAUTH_CALLBACK_PORT, build_version};
-use crate::server::serve;
+use crate::server::{ServerConfig, serve};
 use crate::service_tier::SERVICE_TIER_ENV;
 use crate::tray::{TrayConfig, run_tray};
 
@@ -55,6 +55,12 @@ enum Command {
         /// Optional default service tier. Use "fast" or "priority" for Codex Fast mode.
         #[arg(long, env = SERVICE_TIER_ENV)]
         service_tier: Option<String>,
+        /// Default model used when a downstream OpenAI-style request omits model.
+        #[arg(long, env = "CODEX_PROXY_DEFAULT_MODEL")]
+        default_model: Option<String>,
+        /// Default reasoning effort used for GPT-5/Codex requests that omit reasoning effort.
+        #[arg(long, env = "CODEX_PROXY_DEFAULT_REASONING_EFFORT")]
+        default_reasoning_effort: Option<String>,
     },
     /// Start a lightweight Linux system tray controller for the proxy.
     Tray {
@@ -77,6 +83,12 @@ enum Command {
         /// Optional default service tier. Use "fast" or "priority" for Codex Fast mode.
         #[arg(long, env = SERVICE_TIER_ENV)]
         service_tier: Option<String>,
+        /// Default model used when a downstream OpenAI-style request omits model.
+        #[arg(long, env = "CODEX_PROXY_DEFAULT_MODEL")]
+        default_model: Option<String>,
+        /// Default reasoning effort used for GPT-5/Codex requests that omit reasoning effort.
+        #[arg(long, env = "CODEX_PROXY_DEFAULT_REASONING_EFFORT")]
+        default_reasoning_effort: Option<String>,
     },
 }
 pub async fn run() -> Result<()> {
@@ -123,14 +135,18 @@ pub async fn run() -> Result<()> {
             allow_no_local_api_key,
             models,
             service_tier,
+            default_model,
+            default_reasoning_effort,
         } => {
-            serve(
+            serve(ServerConfig {
                 addr,
                 local_api_key,
                 allow_no_local_api_key,
                 models,
                 service_tier,
-            )
+                default_model,
+                default_reasoning_effort,
+            })
             .await?
         }
         Command::Tray {
@@ -139,6 +155,8 @@ pub async fn run() -> Result<()> {
             allow_no_local_api_key,
             models,
             service_tier,
+            default_model,
+            default_reasoning_effort,
         } => {
             run_tray(TrayConfig {
                 addr,
@@ -146,6 +164,8 @@ pub async fn run() -> Result<()> {
                 allow_no_local_api_key,
                 models,
                 service_tier,
+                default_model,
+                default_reasoning_effort,
             })
             .await?
         }
