@@ -1,6 +1,13 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
   push:
     tags:
       - "v*"
@@ -18,23 +25,91 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
   BIN_NAME: openai-codex-proxy
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      release_ref: ${{ steps.release.outputs.release_ref }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_title: ${{ steps.release.outputs.release_title }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve release source
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "workflow_run" ]]; then
+            release_ref="${WORKFLOW_HEAD_SHA}"
+            short_sha="${WORKFLOW_HEAD_SHA:0:12}"
+            release_tag="main-${WORKFLOW_RUN_NUMBER}-${WORKFLOW_RUN_ATTEMPT}-${short_sha}"
+            release_title="Main build ${short_sha}"
+            prerelease="true"
+          else
+            release_tag="${DISPATCH_TAG:-${REF_NAME}}"
+            release_ref="${release_tag}"
+            release_title="${release_tag}"
+            prerelease="false"
+          fi
+
+          {
+            echo "release_ref=${release_ref}"
+            echo "release_tag=${release_tag}"
+            echo "release_title=${release_title}"
+            echo "prerelease=${prerelease}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create automatic main tag
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          RELEASE_REF: ${{ steps.release.outputs.release_ref }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists; reusing it."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${RELEASE_TAG}" "${RELEASE_REF}" -m "Automated main release ${RELEASE_TAG}"
+          git push origin "refs/tags/${RELEASE_TAG}"
+
   validate:
     name: Validate release source
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.release_ref }}
 
       - name: Install Rust toolchain
         run: |
@@ -64,8 +139,12 @@ jobs:
 
   build:
     name: Build ${{ matrix.label }}
-    needs: validate
+    needs:
+      - prepare
+      - validate
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +178,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.release_ref }}
 
       - name: Install Rust toolchain
         run: |
@@ -173,13 +252,15 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: build
+    needs:
+      - prepare
+      - build
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.release_ref }}
 
       - name: Download release artifacts
         uses: actions/download-artifact@v5
@@ -206,13 +287,22 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.release_title }}
         run: |
           set -euo pipefail
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --title "${RELEASE_TITLE}"
             gh release upload "${RELEASE_TAG}" release-assets/* --clobber
           else
-            gh release create "${RELEASE_TAG}" release-assets/* \
-              --verify-tag \
-              --title "${RELEASE_TAG}" \
+            release_args=(
+              --verify-tag
+              --title "${RELEASE_TITLE}"
               --generate-notes
+            )
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "${RELEASE_TAG}" release-assets/* "${release_args[@]}"
           fi

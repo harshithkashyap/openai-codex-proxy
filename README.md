@@ -179,12 +179,16 @@ curl -N http://127.0.0.1:8787/v1/responses \
 
 GitHub Actions runs CI on pushes, pull requests, and manual dispatch. CI checks formatting, Clippy, tests, and a debug build on Linux, macOS, and Windows.
 
-Publishing a tag that starts with `v` runs the release workflow:
+When CI completes successfully on `main`, the release workflow automatically creates a prerelease tag named `main-<ci-run>-<attempt>-<short-sha>`, creates a GitHub prerelease with generated release notes, and uploads binaries for that exact commit. This is the continuous release channel for testing current `main` builds.
+
+Publishing a tag that starts with `v` runs the stable release path:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+You can also rerun the release workflow manually for an existing tag from the GitHub Actions UI.
 
 The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Each archive includes the binary, `README.md`, and `LICENSE`.
 
