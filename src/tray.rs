@@ -19,7 +19,20 @@ pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = config;
+        let TrayConfig {
+            addr,
+            local_api_key,
+            allow_no_local_api_key,
+            models,
+            service_tier,
+        } = config;
+        let _ = (
+            addr,
+            local_api_key,
+            allow_no_local_api_key,
+            models,
+            service_tier,
+        );
         Err(anyhow::anyhow!(
             "system tray mode is currently supported on Linux desktops with StatusNotifier/AppIndicator support"
         ))
