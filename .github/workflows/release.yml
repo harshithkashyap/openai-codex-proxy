@@ -144,8 +144,6 @@ jobs:
       - prepare
       - validate
     runs-on: ${{ matrix.os }}
-    env:
-      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -153,31 +151,37 @@ jobs:
           - label: Linux x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            asset_suffix: linux-x64
             archive: tar.gz
             appimage_arch: x86_64
           - label: Linux ARM64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            asset_suffix: linux-arm64
             archive: tar.gz
             appimage_arch: aarch64
           - label: macOS Intel
             os: macos-15-intel
             target: x86_64-apple-darwin
+            asset_suffix: macos-x64
             archive: tar.gz
             appimage_arch: ""
           - label: macOS Apple Silicon
             os: macos-latest
             target: aarch64-apple-darwin
+            asset_suffix: macos-arm64
             archive: tar.gz
             appimage_arch: ""
           - label: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            asset_suffix: windows-x64
             archive: zip
             appimage_arch: ""
           - label: Windows ARM64
             os: windows-11-arm
             target: aarch64-pc-windows-msvc
+            asset_suffix: windows-arm64
             archive: zip
             appimage_arch: ""
 
@@ -214,18 +218,17 @@ jobs:
         id: package-unix
         shell: bash
         env:
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          asset="${BIN_NAME}-${RELEASE_TAG}-${TARGET}"
+          asset="${BIN_NAME}-${ASSET_SUFFIX}"
           archive="${asset}.tar.gz"
           mkdir -p "dist/${asset}"
           cp "target/${TARGET}/release/${BIN_NAME}" "dist/${asset}/"
           cp README.md LICENSE "dist/${asset}/"
           tar -C dist -czf "dist/${archive}" "${asset}"
-          (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
           echo "archive=dist/${archive}" >> "${GITHUB_OUTPUT}"
-          echo "checksum=dist/${archive}.sha256" >> "${GITHUB_OUTPUT}"
 
       - name: Package Linux AppImage
         if: matrix.appimage_arch != ''
@@ -233,11 +236,12 @@ jobs:
         shell: bash
         env:
           APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
 
-          asset="${BIN_NAME}-${RELEASE_TAG}-${TARGET}"
+          asset="${BIN_NAME}-${ASSET_SUFFIX}"
           appdir="dist/${asset}.AppDir"
           appimage="dist/${asset}.AppImage"
           appimagetool="dist/appimagetool-${APPIMAGE_ARCH}.AppImage"
@@ -290,28 +294,24 @@ jobs:
           chmod +x "${appimagetool}"
 
           ARCH="${APPIMAGE_ARCH}" APPIMAGE_EXTRACT_AND_RUN=1 "${appimagetool}" "${appdir}" "${appimage}"
-          (cd dist && shasum -a 256 "$(basename "${appimage}")" > "$(basename "${appimage}").sha256")
 
           echo "appimage=${appimage}" >> "${GITHUB_OUTPUT}"
-          echo "checksum=${appimage}.sha256" >> "${GITHUB_OUTPUT}"
 
       - name: Package Windows archive
         if: matrix.archive == 'zip'
         id: package-windows
         shell: pwsh
         env:
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
           TARGET: ${{ matrix.target }}
         run: |
-          $asset = "${env:BIN_NAME}-${env:RELEASE_TAG}-${env:TARGET}"
+          $asset = "${env:BIN_NAME}-${env:ASSET_SUFFIX}"
           $archive = "${asset}.zip"
           New-Item -ItemType Directory -Force -Path "dist/${asset}" | Out-Null
           Copy-Item "target/${env:TARGET}/release/${env:BIN_NAME}.exe" "dist/${asset}/"
           Copy-Item README.md, LICENSE "dist/${asset}/"
           Compress-Archive -Path "dist/${asset}" -DestinationPath "dist/${archive}" -Force
-          $hash = (Get-FileHash -Algorithm SHA256 "dist/${archive}").Hash.ToLowerInvariant()
-          "${hash}  ${archive}" | Out-File -FilePath "dist/${archive}.sha256" -Encoding ascii
           "archive=dist/${archive}" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "checksum=dist/${archive}.sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Generate build provenance attestation
         uses: actions/attest@v4
@@ -330,9 +330,7 @@ jobs:
           name: release-${{ matrix.target }}
           path: |
             ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}
-            ${{ steps.package-unix.outputs.checksum || steps.package-windows.outputs.checksum }}
             ${{ steps.package-appimage.outputs.appimage }}
-            ${{ steps.package-appimage.outputs.checksum }}
           if-no-files-found: error
 
   publish:

@@ -73,17 +73,17 @@ The local API key is a secret you choose for downstream clients that connect to 
 Linux and macOS release archives contain the executable plus `README.md` and `LICENSE`:
 
 ```bash
-tar -xzf openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install -m 0755 openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu/openai-codex-proxy /usr/local/bin/openai-codex-proxy
+tar -xzf openai-codex-proxy-linux-x64.tar.gz
+sudo install -m 0755 openai-codex-proxy-linux-x64/openai-codex-proxy /usr/local/bin/openai-codex-proxy
 ```
 
 Linux AppImages do not need installation:
 
 ```bash
-chmod +x openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage
-./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage
-./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage status
-./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage serve --local-api-key local-dev-secret
+chmod +x openai-codex-proxy-linux-x64.AppImage
+./openai-codex-proxy-linux-x64.AppImage
+./openai-codex-proxy-linux-x64.AppImage status
+./openai-codex-proxy-linux-x64.AppImage serve --local-api-key local-dev-secret
 ```
 
 Opening a release AppImage with no arguments starts the Linux tray controller. Passing any CLI argument keeps the normal command-line behavior.
@@ -92,10 +92,24 @@ You can also put the AppImage on your PATH:
 
 ```bash
 mkdir -p ~/.local/bin
-mv openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage ~/.local/bin/openai-codex-proxy
+mv openai-codex-proxy-linux-x64.AppImage ~/.local/bin/openai-codex-proxy
 ```
 
 Windows release archives contain `openai-codex-proxy.exe`; run it from PowerShell or add its directory to `PATH`.
+
+Release asset names are intentionally short because the GitHub release tag already identifies the exact build:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x64 AppImage | `openai-codex-proxy-linux-x64.AppImage` |
+| Linux ARM64 AppImage | `openai-codex-proxy-linux-arm64.AppImage` |
+| Linux x64 archive | `openai-codex-proxy-linux-x64.tar.gz` |
+| Linux ARM64 archive | `openai-codex-proxy-linux-arm64.tar.gz` |
+| macOS Intel archive | `openai-codex-proxy-macos-x64.tar.gz` |
+| macOS Apple Silicon archive | `openai-codex-proxy-macos-arm64.tar.gz` |
+| Windows x64 archive | `openai-codex-proxy-windows-x64.zip` |
+| Windows ARM64 archive | `openai-codex-proxy-windows-arm64.zip` |
+| Checksums | `SHA256SUMS` |
 
 ### Start the proxy
 
@@ -273,12 +287,12 @@ git push origin v0.1.0
 
 You can also rerun the release workflow manually for an existing tag from the GitHub Actions UI.
 
-The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Opening a release AppImage without arguments launches the tray controller; CLI subcommands still work by passing arguments. Each archive includes the binary, `README.md`, and `LICENSE`.
+The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Opening a release AppImage without arguments launches the tray controller; CLI subcommands still work by passing arguments. Each archive includes the binary, `README.md`, and `LICENSE`. Asset filenames omit the release tag and commit hash because those are already part of the GitHub release page.
 
-Release assets include per-asset `.sha256` files and a combined `SHA256SUMS` file. The workflow also generates GitHub artifact attestations for each binary archive, each AppImage, and `SHA256SUMS`; verify them with:
+Release assets include one combined `SHA256SUMS` file instead of separate checksum files for every binary. The workflow also generates GitHub artifact attestations for each binary archive, each AppImage, and `SHA256SUMS`; verify them with:
 
 ```bash
-gh attestation verify openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify openai-codex-proxy-linux-x64.tar.gz \
   -R harshithkashyap/openai-codex-proxy
 ```
 
