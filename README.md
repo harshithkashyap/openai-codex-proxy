@@ -175,6 +175,26 @@ curl -N http://127.0.0.1:8787/v1/responses \
   }'
 ```
 
+## Release automation
+
+GitHub Actions runs CI on pushes, pull requests, and manual dispatch. CI checks formatting, Clippy, tests, and a debug build on Linux, macOS, and Windows.
+
+Publishing a tag that starts with `v` runs the release workflow:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Each archive includes the binary, `README.md`, and `LICENSE`.
+
+Release assets include per-archive `.sha256` files and a combined `SHA256SUMS` file. The workflow also generates GitHub artifact attestations for each binary archive and for `SHA256SUMS`; verify them with:
+
+```bash
+gh attestation verify openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  -R harshithkashyap/openai-codex-proxy
+```
+
 ## Security notes
 
 - Keep the proxy bound to `127.0.0.1`.
