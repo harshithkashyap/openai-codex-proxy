@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod cookies;
 mod errors;
+#[cfg(target_os = "linux")]
 mod local_config;
 mod logging;
 mod models;

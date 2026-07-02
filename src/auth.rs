@@ -125,6 +125,7 @@ impl AuthManager {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) async fn clear(&self) -> Result<()> {
         match tokio::fs::remove_file(&self.path).await {
             Ok(()) => {}
