@@ -51,7 +51,7 @@ mod linux {
     use std::process::Stdio;
 
     use anyhow::{Context, Result};
-    use ksni::menu::{RadioGroup, RadioItem, StandardItem};
+    use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
     use ksni::{Icon, MenuItem, Status, ToolTip, Tray, TrayMethods};
     use tokio::sync::{mpsc, oneshot};
     use tokio::task::JoinHandle;
@@ -582,51 +582,74 @@ mod linux {
                 .position(|model| model == &selected_model)
                 .unwrap_or_default();
 
-            RadioGroup {
-                selected,
-                select: Box::new(|tray: &mut Self, index: usize| {
-                    let choices = tray.model_choices();
-                    if let Some(model) = choices.get(index).cloned() {
-                        tray.config.default_model = Some(model.clone());
-                        tray.last_message = Some(format!("Saving default model: {model}"));
-                        tray.send_command(TrayCommand::SetDefaultModel(model));
+            SubMenu {
+                label: format!("Default model: {selected_model}"),
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        select: Box::new(|tray: &mut Self, index: usize| {
+                            let choices = tray.model_choices();
+                            let Some(model) = choices.get(index).cloned() else {
+                                return;
+                            };
+                            tray.config.default_model = Some(model.clone());
+                            tray.last_message = Some(format!("Saving default model: {model}"));
+                            tray.send_command(TrayCommand::SetDefaultModel(model));
+                        }),
+                        options: choices
+                            .into_iter()
+                            .map(|model| RadioItem {
+                                label: model,
+                                ..Default::default()
+                            })
+                            .collect(),
                     }
-                }),
-                options: choices
-                    .into_iter()
-                    .map(|model| RadioItem {
-                        label: model,
-                        ..Default::default()
-                    })
-                    .collect(),
+                    .into(),
+                ],
+                ..Default::default()
             }
             .into()
         }
 
         fn default_reasoning_menu(&self) -> MenuItem<Self> {
             let selected_effort = self.default_reasoning_effort();
-            let selected = SUPPORTED_REASONING_EFFORTS
+            let choices = SUPPORTED_REASONING_EFFORTS
                 .iter()
-                .position(|effort| *effort == selected_effort)
+                .map(|effort| (*effort).to_string())
+                .collect::<Vec<_>>();
+            let selected = choices
+                .iter()
+                .position(|effort| effort == &selected_effort)
                 .unwrap_or_default();
 
-            RadioGroup {
-                selected,
-                select: Box::new(|tray: &mut Self, index: usize| {
-                    if let Some(effort) = SUPPORTED_REASONING_EFFORTS.get(index) {
-                        let effort = (*effort).to_string();
-                        tray.config.default_reasoning_effort = Some(effort.clone());
-                        tray.last_message = Some(format!("Saving default reasoning: {effort}"));
-                        tray.send_command(TrayCommand::SetDefaultReasoningEffort(effort));
+            SubMenu {
+                label: format!("Default reasoning: {selected_effort}"),
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        select: Box::new(|tray: &mut Self, index: usize| {
+                            let choices = SUPPORTED_REASONING_EFFORTS
+                                .iter()
+                                .map(|effort| (*effort).to_string())
+                                .collect::<Vec<_>>();
+                            let Some(effort) = choices.get(index).cloned() else {
+                                return;
+                            };
+                            tray.config.default_reasoning_effort = Some(effort.clone());
+                            tray.last_message = Some(format!("Saving default reasoning: {effort}"));
+                            tray.send_command(TrayCommand::SetDefaultReasoningEffort(effort));
+                        }),
+                        options: choices
+                            .into_iter()
+                            .map(|effort| RadioItem {
+                                label: effort,
+                                ..Default::default()
+                            })
+                            .collect(),
                     }
-                }),
-                options: SUPPORTED_REASONING_EFFORTS
-                    .iter()
-                    .map(|effort| RadioItem {
-                        label: (*effort).to_string(),
-                        ..Default::default()
-                    })
-                    .collect(),
+                    .into(),
+                ],
+                ..Default::default()
             }
             .into()
         }
@@ -690,11 +713,6 @@ mod linux {
                 Self::disabled_item(format!("Release: {}", build_version())),
                 Self::disabled_item(format!("Base URL: {}", base_url(self.config.addr))),
                 Self::disabled_item("Local API key: configured"),
-                Self::disabled_item(format!("Default model: {}", self.default_model())),
-                Self::disabled_item(format!(
-                    "Default reasoning: {}",
-                    self.default_reasoning_effort()
-                )),
             ];
 
             if let Some(message) = self.last_message.as_deref() {
@@ -703,9 +721,7 @@ mod linux {
 
             items.extend([
                 MenuItem::Separator,
-                Self::disabled_item("Default model"),
                 self.default_model_menu(),
-                Self::disabled_item("Default reasoning"),
                 self.default_reasoning_menu(),
             ]);
             if self.status.can_stop() {

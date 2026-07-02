@@ -112,6 +112,15 @@ Stable release asset names include the release version and intentionally omit co
 | Windows ARM64 archive | `openai-codex-proxy-0.1.0-windows-arm64.zip` |
 | Checksums | `SHA256SUMS` |
 
+Build a local Linux AppImage from the current working tree before publishing:
+
+```bash
+scripts/build-local-appimage.sh
+APPIMAGE_EXTRACT_AND_RUN=1 dist/openai-codex-proxy-0.1.0-local.<timestamp>-linux-x64.AppImage
+```
+
+The helper writes ignored test artifacts under `dist/`, reuses a cached `appimagetool` when present, and marks dirty working-tree builds with a `local-<sha>-dirty` build tag.
+
 ### Start the proxy
 
 If you are already signed in with Codex and have a file-backed `~/.codex/auth.json`, you can serve directly:
@@ -154,7 +163,7 @@ Opening a release AppImage without arguments also starts tray mode.
 
 The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, default model, default reasoning effort, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
 
-Use the tray's default model and default reasoning radio groups to choose values used only when a downstream client omits those fields. Client-provided `model`, `reasoning.effort`, `reasoning_effort`, or `reasoningEffort` values still win. If the proxy is already running, changed defaults are saved immediately and apply the next time you stop and start the proxy.
+Use the tray's default model and default reasoning selectors to choose values used only when a downstream client omits those fields. Client-provided `model`, `reasoning.effort`, `reasoning_effort`, or `reasoningEffort` values still win. If the proxy is already running, changed defaults are saved immediately and apply the next time you stop and start the proxy.
 
 The tray status icon and menu action icons are bundled with the project instead of relying on desktop-theme icon names. AppImage launcher metadata also uses the bundled project icon.
 
