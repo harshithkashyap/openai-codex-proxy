@@ -29,6 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  APPIMAGETOOL_VERSION: "12"
   BIN_NAME: openai-codex-proxy
   CARGO_TERM_COLOR: always
 
@@ -153,26 +154,32 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+            appimage_arch: x86_64
           - label: Linux ARM64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
+            appimage_arch: aarch64
           - label: macOS Intel
             os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
+            appimage_arch: ""
           - label: macOS Apple Silicon
             os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
+            appimage_arch: ""
           - label: Windows x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            appimage_arch: ""
           - label: Windows ARM64
             os: windows-11-arm
             target: aarch64-pc-windows-msvc
             archive: zip
+            appimage_arch: ""
 
     steps:
       - name: Check out repository
@@ -218,6 +225,71 @@ jobs:
           echo "archive=dist/${archive}" >> "${GITHUB_OUTPUT}"
           echo "checksum=dist/${archive}.sha256" >> "${GITHUB_OUTPUT}"
 
+      - name: Package Linux AppImage
+        if: matrix.appimage_arch != ''
+        id: package-appimage
+        shell: bash
+        env:
+          APPIMAGE_ARCH: ${{ matrix.appimage_arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          asset="${BIN_NAME}-${RELEASE_TAG}-${TARGET}"
+          appdir="dist/${asset}.AppDir"
+          appimage="dist/${asset}.AppImage"
+          appimagetool="dist/appimagetool-${APPIMAGE_ARCH}.AppImage"
+
+          mkdir -p \
+            "${appdir}/usr/bin" \
+            "${appdir}/usr/share/applications" \
+            "${appdir}/usr/share/doc/${BIN_NAME}" \
+            "${appdir}/usr/share/icons/hicolor/scalable/apps"
+
+          cp "target/${TARGET}/release/${BIN_NAME}" "${appdir}/usr/bin/${BIN_NAME}"
+          cp README.md LICENSE "${appdir}/usr/share/doc/${BIN_NAME}/"
+
+          cat > "${appdir}/AppRun" <<'APP_RUN'
+          #!/usr/bin/env sh
+          set -eu
+          appdir="$(dirname "$(readlink -f "$0")")"
+          exec "${appdir}/usr/bin/openai-codex-proxy" "$@"
+          APP_RUN
+          chmod +x "${appdir}/AppRun"
+
+          cat > "${appdir}/${BIN_NAME}.desktop" <<DESKTOP_ENTRY
+          [Desktop Entry]
+          Type=Application
+          Name=OpenAI Codex Proxy
+          Comment=Local OpenAI-compatible proxy for the ChatGPT/Codex backend
+          Exec=${BIN_NAME}
+          Icon=${BIN_NAME}
+          Categories=Development;Network;
+          Terminal=true
+          DESKTOP_ENTRY
+          cp "${appdir}/${BIN_NAME}.desktop" "${appdir}/usr/share/applications/${BIN_NAME}.desktop"
+
+          cat > "${appdir}/${BIN_NAME}.svg" <<'SVG_ICON'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="48" fill="#111827"/>
+            <path d="M66 78h124v100H66z" fill="none" stroke="#e5e7eb" stroke-width="14" stroke-linejoin="round"/>
+            <path d="M92 112h72M92 144h44" fill="none" stroke="#38bdf8" stroke-width="14" stroke-linecap="round"/>
+            <path d="M54 198h148" fill="none" stroke="#e5e7eb" stroke-width="14" stroke-linecap="round"/>
+          </svg>
+          SVG_ICON
+          cp "${appdir}/${BIN_NAME}.svg" "${appdir}/usr/share/icons/hicolor/scalable/apps/${BIN_NAME}.svg"
+
+          curl -fsSL \
+            -o "${appimagetool}" \
+            "https://github.com/AppImage/AppImageKit/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${APPIMAGE_ARCH}.AppImage"
+          chmod +x "${appimagetool}"
+
+          ARCH="${APPIMAGE_ARCH}" APPIMAGE_EXTRACT_AND_RUN=1 "${appimagetool}" "${appdir}" "${appimage}"
+          (cd dist && shasum -a 256 "$(basename "${appimage}")" > "$(basename "${appimage}").sha256")
+
+          echo "appimage=${appimage}" >> "${GITHUB_OUTPUT}"
+          echo "checksum=${appimage}.sha256" >> "${GITHUB_OUTPUT}"
+
       - name: Package Windows archive
         if: matrix.archive == 'zip'
         id: package-windows
@@ -241,6 +313,12 @@ jobs:
         with:
           subject-path: ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}
 
+      - name: Generate AppImage provenance attestation
+        if: matrix.appimage_arch != ''
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.package-appimage.outputs.appimage }}
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
@@ -248,6 +326,8 @@ jobs:
           path: |
             ${{ steps.package-unix.outputs.archive || steps.package-windows.outputs.archive }}
             ${{ steps.package-unix.outputs.checksum || steps.package-windows.outputs.checksum }}
+            ${{ steps.package-appimage.outputs.appimage }}
+            ${{ steps.package-appimage.outputs.checksum }}
           if-no-files-found: error
 
   publish:
@@ -274,7 +354,7 @@ jobs:
         run: |
           set -euo pipefail
           cd release-assets
-          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 \
+          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' \) -print0 \
             | sort -z \
             | xargs -0 shasum -a 256 > SHA256SUMS
 

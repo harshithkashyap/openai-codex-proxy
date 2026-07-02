@@ -63,23 +63,55 @@ The proxy intentionally keeps `/v1/responses` and `/v1/responses/compact` as clo
 
 ## Usage
 
+Release archives and AppImages only provide an executable. Installing or copying the executable does not start a daemon, register a background service, or configure a desktop client. The proxy runs only while `openai-codex-proxy serve` is running, logs to the terminal by default, and stops on Ctrl-C.
+
+The local API key is a secret you choose for downstream clients that connect to this localhost proxy. It is not your ChatGPT token.
+
+### Install a release binary
+
+Linux and macOS release archives contain the executable plus `README.md` and `LICENSE`:
+
+```bash
+tar -xzf openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu/openai-codex-proxy /usr/local/bin/openai-codex-proxy
+```
+
+Linux AppImages do not need installation:
+
+```bash
+chmod +x openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage
+./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage status
+./openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage serve --local-api-key local-dev-secret
+```
+
+You can also put the AppImage on your PATH:
+
+```bash
+mkdir -p ~/.local/bin
+mv openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.AppImage ~/.local/bin/openai-codex-proxy
+```
+
+Windows release archives contain `openai-codex-proxy.exe`; run it from PowerShell or add its directory to `PATH`.
+
+### Start the proxy
+
 If you are already signed in with Codex and have a file-backed `~/.codex/auth.json`, you can serve directly:
 
 ```bash
-cargo run -- status
-cargo run -- serve --addr 127.0.0.1:8787 --local-api-key local-dev-secret
+openai-codex-proxy status
+openai-codex-proxy serve --addr 127.0.0.1:8787 --local-api-key local-dev-secret
 ```
 
 If you need to create or refresh file-backed ChatGPT auth from this proxy:
 
 ```bash
-cargo run -- login
+openai-codex-proxy login
 ```
 
 For headless or remote hosts where browser callback login cannot reach the local callback server:
 
 ```bash
-cargo run -- login --device-auth
+openai-codex-proxy login --device-auth
 ```
 
 Configure a client as:
@@ -90,6 +122,38 @@ API key: local-dev-secret
 ```
 
 For tools that do not support a custom API key header but send `Authorization: Bearer ...`, use the same local API key as the bearer token.
+
+To run the proxy in the background, wrap the same foreground command with your process manager. For example, a user-level systemd service at `~/.config/systemd/user/openai-codex-proxy.service` can run the proxy after you create `~/.config/openai-codex-proxy/env` containing `CODEX_PROXY_LOCAL_API_KEY=local-dev-secret`:
+
+```ini
+[Unit]
+Description=OpenAI Codex Proxy
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/openai-codex-proxy serve --addr 127.0.0.1:8787
+EnvironmentFile=%h/.config/openai-codex-proxy/env
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Enable it with:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now openai-codex-proxy.service
+```
+
+### Run from source
+
+During development, replace `openai-codex-proxy` with `cargo run --`:
+
+```bash
+cargo run -- status
+cargo run -- serve --addr 127.0.0.1:8787 --local-api-key local-dev-secret
+```
 
 ### Anthropic-compatible clients
 
@@ -124,7 +188,7 @@ anthropic-version: 2023-06-01
 Advertise a different model list with:
 
 ```bash
-CODEX_PROXY_MODELS=gpt-5.5,gpt-5.4 cargo run -- serve --local-api-key local-dev-secret
+CODEX_PROXY_MODELS=gpt-5.5,gpt-5.4 openai-codex-proxy serve --local-api-key local-dev-secret
 ```
 
 `/v1/models` is an advertised compatibility catalog for clients. It does not query a live ChatGPT entitlement catalog; unsupported models will fail at the upstream Codex backend if your account cannot use them.
@@ -132,7 +196,7 @@ CODEX_PROXY_MODELS=gpt-5.5,gpt-5.4 cargo run -- serve --local-api-key local-dev-
 Enable Codex Fast mode by setting the service tier to `fast` or `priority`:
 
 ```bash
-CODEX_PROXY_SERVICE_TIER=fast cargo run -- serve --local-api-key local-dev-secret
+CODEX_PROXY_SERVICE_TIER=fast openai-codex-proxy serve --local-api-key local-dev-secret
 ```
 
 The proxy normalizes `fast` to Codex's backend request value, `priority`. Leave `CODEX_PROXY_SERVICE_TIER` unset for standard mode, or set it to `default`, `standard`, `off`, `none`, or `false` to omit `service_tier`. When this default is configured, `/v1/responses` JSON bodies without an explicit `service_tier` are lightly rewritten for GPT-5/Codex models; otherwise `/v1/responses` remains raw pass-through. Explicit request `service_tier` values still win.
@@ -140,7 +204,7 @@ The proxy normalizes `fast` to Codex's backend request value, `priority`. Leave 
 Request logs are emitted at `INFO` by default. For more detail:
 
 ```bash
-RUST_LOG=openai_codex_proxy=debug,tower_http=debug cargo run -- serve --local-api-key local-dev-secret
+RUST_LOG=openai_codex_proxy=debug,tower_http=debug openai-codex-proxy serve --local-api-key local-dev-secret
 ```
 
 Compatibility traces are also appended to `/tmp/openai-codex-proxy.log` by default:
@@ -190,9 +254,9 @@ git push origin v0.1.0
 
 You can also rerun the release workflow manually for an existing tag from the GitHub Actions UI.
 
-The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Each archive includes the binary, `README.md`, and `LICENSE`.
+The release workflow validates the source, builds release binaries for Linux, macOS, and Windows on x64 and ARM64 runners, and uploads archives to the GitHub release. Linux releases also include x64 and ARM64 AppImages. Each archive includes the binary, `README.md`, and `LICENSE`.
 
-Release assets include per-archive `.sha256` files and a combined `SHA256SUMS` file. The workflow also generates GitHub artifact attestations for each binary archive and for `SHA256SUMS`; verify them with:
+Release assets include per-asset `.sha256` files and a combined `SHA256SUMS` file. The workflow also generates GitHub artifact attestations for each binary archive, each AppImage, and `SHA256SUMS`; verify them with:
 
 ```bash
 gh attestation verify openai-codex-proxy-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
