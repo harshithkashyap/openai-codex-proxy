@@ -48,16 +48,25 @@ pub(crate) async fn run_tray(config: TrayConfig) -> Result<()> {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::io::Write;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::{Path, PathBuf};
     use std::process::Stdio;
+    use std::sync::Arc;
 
     use anyhow::{Context, Result};
-    use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
+    use axum::Router;
+    use axum::extract::{Form, Query, State};
+    use axum::http::StatusCode;
+    use axum::response::{Html, IntoResponse, Response};
+    use axum::routing::get;
+    use ksni::menu::StandardItem;
     use ksni::{Icon, MenuItem, Status, ToolTip, Tray, TrayMethods};
-    use tokio::sync::{mpsc, oneshot};
+    use serde::Deserialize;
+    use tokio::sync::{RwLock, mpsc, oneshot};
     use tokio::task::JoinHandle;
 
     use super::TrayConfig;
-    use crate::auth::{AuthManager, StoredAuth, login_browser};
+    use crate::auth::{AuthManager, StoredAuth, login_browser, random_urlsafe, try_open_browser};
     use crate::config::{
         DEFAULT_MODEL, DEFAULT_OAUTH_CALLBACK_PORT, SUPPORTED_REASONING_EFFORTS, build_version,
         configured_default_model, configured_default_reasoning_effort,
@@ -103,7 +112,7 @@ mod linux {
         let tray = ProxyTray {
             config,
             status: ProxyStatus::Stopped,
-            auth_status,
+            auth_status: auth_status.clone(),
             local_api_key: local_key.value,
             last_message: Some(initial_message),
             command_tx: command_tx.clone(),
@@ -114,6 +123,15 @@ mod linux {
 
         let mut running: Option<RunningServer> = None;
         let mut stop_requested = false;
+        let mut settings_server = Some(
+            start_settings_server(
+                config_path.clone(),
+                command_tx.clone(),
+                &config_for_server,
+                &auth_status,
+            )
+            .await?,
+        );
 
         while let Some(command) = command_rx.recv().await {
             match command {
@@ -270,35 +288,33 @@ mod linux {
                     let message = copy_to_clipboard(&settings, "client settings");
                     set_last_message(&handle, message).await;
                 }
-                TrayCommand::SetDefaultModel(model) => {
+                TrayCommand::DefaultsSaved {
+                    model,
+                    reasoning_effort,
+                } => {
                     let model = configured_default_model(Some(model));
+                    let reasoning_effort =
+                        configured_default_reasoning_effort(Some(reasoning_effort));
                     config_for_server.default_model = Some(model.clone());
-                    let message = match save_default_model(&config_path, &model).await {
-                        Ok(()) if running.is_some() => {
-                            format!("Default model set to {model}; restart proxy to apply")
-                        }
-                        Ok(()) => format!("Default model set to {model}"),
-                        Err(err) => format!(
-                            "Could not save default model {}: {}",
-                            model,
-                            clip(&err.to_string(), 96)
-                        ),
+                    config_for_server.default_reasoning_effort = Some(reasoning_effort.clone());
+                    let message = if running.is_some() {
+                        format!(
+                            "Defaults saved: {model}, {reasoning_effort}; restart proxy to apply"
+                        )
+                    } else {
+                        format!("Defaults saved: {model}, {reasoning_effort}")
                     };
-                    set_last_message(&handle, message).await;
+                    set_defaults(&handle, model, reasoning_effort, message).await;
                 }
-                TrayCommand::SetDefaultReasoningEffort(effort) => {
-                    let effort = configured_default_reasoning_effort(Some(effort));
-                    config_for_server.default_reasoning_effort = Some(effort.clone());
-                    let message = match save_default_reasoning_effort(&config_path, &effort).await {
-                        Ok(()) if running.is_some() => {
-                            format!("Default reasoning set to {effort}; restart proxy to apply")
+                TrayCommand::OpenSettings => {
+                    let message = match settings_server.as_ref() {
+                        Some(settings) if try_open_browser(&settings.url) => {
+                            format!("Opened settings: {}", settings.url)
                         }
-                        Ok(()) => format!("Default reasoning set to {effort}"),
-                        Err(err) => format!(
-                            "Could not save default reasoning {}: {}",
-                            effort,
-                            clip(&err.to_string(), 96)
-                        ),
+                        Some(settings) => {
+                            format!("Could not open browser; settings URL: {}", settings.url)
+                        }
+                        None => "Settings server is not running".into(),
                     };
                     set_last_message(&handle, message).await;
                 }
@@ -307,6 +323,9 @@ mod linux {
                     set_last_message(&handle, message).await;
                 }
                 TrayCommand::Quit => {
+                    if let Some(settings) = settings_server.take() {
+                        settings.shutdown().await;
+                    }
                     if let Some(mut server) = running.take() {
                         if let Some(shutdown) = server.shutdown.take() {
                             let _ = shutdown.send(());
@@ -365,8 +384,11 @@ mod linux {
         CopyBaseUrl,
         CopyApiKey,
         CopyClientSettings,
-        SetDefaultModel(String),
-        SetDefaultReasoningEffort(String),
+        DefaultsSaved {
+            model: String,
+            reasoning_effort: String,
+        },
+        OpenSettings,
         OpenLogs,
         Quit,
         ServerReady(std::net::SocketAddr),
@@ -553,105 +575,32 @@ mod linux {
             .into()
         }
 
+        fn text_command_item(
+            label: impl Into<String>,
+            enabled: bool,
+            command: TrayCommand,
+            message_after_click: Option<String>,
+        ) -> MenuItem<Self> {
+            StandardItem {
+                label: label.into(),
+                enabled,
+                activate: Box::new(move |tray: &mut Self| {
+                    if let Some(message) = message_after_click.clone() {
+                        tray.last_message = Some(message);
+                    }
+                    tray.send_command(command.clone());
+                }),
+                ..Default::default()
+            }
+            .into()
+        }
+
         fn default_model(&self) -> String {
             configured_default_model(self.config.default_model.clone())
         }
 
         fn default_reasoning_effort(&self) -> String {
             configured_default_reasoning_effort(self.config.default_reasoning_effort.clone())
-        }
-
-        fn model_choices(&self) -> Vec<String> {
-            let mut choices = if self.config.models.is_empty() {
-                vec![DEFAULT_MODEL.to_string()]
-            } else {
-                self.config.models.clone()
-            };
-            let selected = self.default_model();
-            if !choices.iter().any(|model| model == &selected) {
-                choices.push(selected);
-            }
-            choices
-        }
-
-        fn default_model_menu(&self) -> MenuItem<Self> {
-            let choices = self.model_choices();
-            let selected_model = self.default_model();
-            let selected = choices
-                .iter()
-                .position(|model| model == &selected_model)
-                .unwrap_or_default();
-
-            SubMenu {
-                label: format!("Default model: {selected_model}"),
-                submenu: vec![
-                    RadioGroup {
-                        selected,
-                        select: Box::new(|tray: &mut Self, index: usize| {
-                            let choices = tray.model_choices();
-                            let Some(model) = choices.get(index).cloned() else {
-                                return;
-                            };
-                            tray.config.default_model = Some(model.clone());
-                            tray.last_message = Some(format!("Saving default model: {model}"));
-                            tray.send_command(TrayCommand::SetDefaultModel(model));
-                        }),
-                        options: choices
-                            .into_iter()
-                            .map(|model| RadioItem {
-                                label: model,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    }
-                    .into(),
-                ],
-                ..Default::default()
-            }
-            .into()
-        }
-
-        fn default_reasoning_menu(&self) -> MenuItem<Self> {
-            let selected_effort = self.default_reasoning_effort();
-            let choices = SUPPORTED_REASONING_EFFORTS
-                .iter()
-                .map(|effort| (*effort).to_string())
-                .collect::<Vec<_>>();
-            let selected = choices
-                .iter()
-                .position(|effort| effort == &selected_effort)
-                .unwrap_or_default();
-
-            SubMenu {
-                label: format!("Default reasoning: {selected_effort}"),
-                submenu: vec![
-                    RadioGroup {
-                        selected,
-                        select: Box::new(|tray: &mut Self, index: usize| {
-                            let choices = SUPPORTED_REASONING_EFFORTS
-                                .iter()
-                                .map(|effort| (*effort).to_string())
-                                .collect::<Vec<_>>();
-                            let Some(effort) = choices.get(index).cloned() else {
-                                return;
-                            };
-                            tray.config.default_reasoning_effort = Some(effort.clone());
-                            tray.last_message = Some(format!("Saving default reasoning: {effort}"));
-                            tray.send_command(TrayCommand::SetDefaultReasoningEffort(effort));
-                        }),
-                        options: choices
-                            .into_iter()
-                            .map(|effort| RadioItem {
-                                label: effort,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    }
-                    .into(),
-                ],
-                ..Default::default()
-            }
-            .into()
         }
     }
 
@@ -721,8 +670,17 @@ mod linux {
 
             items.extend([
                 MenuItem::Separator,
-                self.default_model_menu(),
-                self.default_reasoning_menu(),
+                Self::disabled_item(format!("Default model: {}", self.default_model())),
+                Self::disabled_item(format!(
+                    "Default reasoning: {}",
+                    self.default_reasoning_effort()
+                )),
+                Self::text_command_item(
+                    "Open Settings",
+                    true,
+                    TrayCommand::OpenSettings,
+                    Some("Opening settings".into()),
+                ),
             ]);
             if self.status.can_stop() {
                 items.push(Self::disabled_item("Default changes apply after restart"));
@@ -812,6 +770,396 @@ mod linux {
         }
     }
 
+    struct SettingsServer {
+        url: String,
+        shutdown: oneshot::Sender<()>,
+        task: JoinHandle<()>,
+    }
+
+    impl SettingsServer {
+        async fn shutdown(self) {
+            let _ = self.shutdown.send(());
+            let _ = self.task.await;
+        }
+    }
+
+    struct SettingsState {
+        token: String,
+        config_path: PathBuf,
+        command_tx: mpsc::UnboundedSender<TrayCommand>,
+        view: RwLock<SettingsView>,
+    }
+
+    #[derive(Clone)]
+    struct SettingsView {
+        release: String,
+        base_url: String,
+        local_api_key: String,
+        client_settings: String,
+        auth_status: String,
+        model_choices: Vec<String>,
+        reasoning_choices: Vec<String>,
+        default_model: String,
+        default_reasoning_effort: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SettingsQuery {
+        token: String,
+    }
+
+    #[derive(Deserialize)]
+    struct SettingsForm {
+        token: String,
+        default_model: String,
+        default_reasoning_effort: String,
+    }
+
+    async fn start_settings_server(
+        config_path: PathBuf,
+        command_tx: mpsc::UnboundedSender<TrayCommand>,
+        config: &TrayConfig,
+        auth_status: &AuthStatus,
+    ) -> Result<SettingsServer> {
+        let token = random_urlsafe(32)?;
+        let state = Arc::new(SettingsState {
+            token: token.clone(),
+            config_path,
+            command_tx,
+            view: RwLock::new(settings_view(config, auth_status)),
+        });
+        let app = Router::new()
+            .route("/", get(settings_page).post(save_settings))
+            .with_state(state);
+        let listener =
+            tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+        let addr = listener.local_addr()?;
+        let url = format!("http://{addr}/?token={token}");
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
+            if let Err(err) = result {
+                eprintln!("settings server failed: {err}");
+            }
+        });
+
+        Ok(SettingsServer {
+            url,
+            shutdown,
+            task,
+        })
+    }
+
+    fn settings_view(config: &TrayConfig, auth_status: &AuthStatus) -> SettingsView {
+        let local_api_key = config.local_api_key.clone().unwrap_or_default();
+        SettingsView {
+            release: build_version().to_string(),
+            base_url: base_url(config.addr),
+            client_settings: client_settings(config.addr, &local_api_key),
+            local_api_key,
+            auth_status: auth_status.detail(),
+            model_choices: model_choices_for_config(config),
+            reasoning_choices: reasoning_choices(),
+            default_model: configured_default_model(config.default_model.clone()),
+            default_reasoning_effort: configured_default_reasoning_effort(
+                config.default_reasoning_effort.clone(),
+            ),
+        }
+    }
+
+    async fn settings_page(
+        State(state): State<Arc<SettingsState>>,
+        Query(query): Query<SettingsQuery>,
+    ) -> Response {
+        if query.token != state.token {
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+
+        let view = state.view.read().await.clone();
+        Html(render_settings_page(&state.token, &view, None)).into_response()
+    }
+
+    async fn save_settings(
+        State(state): State<Arc<SettingsState>>,
+        Form(form): Form<SettingsForm>,
+    ) -> Response {
+        if form.token != state.token {
+            return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+        }
+
+        let model = configured_default_model(Some(form.default_model));
+        let reasoning_effort =
+            configured_default_reasoning_effort(Some(form.default_reasoning_effort));
+
+        {
+            let view = state.view.read().await;
+            if !view.model_choices.iter().any(|choice| choice == &model) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(render_settings_page(
+                        &state.token,
+                        &view,
+                        Some("Unknown model selection"),
+                    )),
+                )
+                    .into_response();
+            }
+            if !view
+                .reasoning_choices
+                .iter()
+                .any(|choice| choice == &reasoning_effort)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Html(render_settings_page(
+                        &state.token,
+                        &view,
+                        Some("Unknown reasoning selection"),
+                    )),
+                )
+                    .into_response();
+            }
+        }
+
+        if let Err(err) = save_defaults(&state.config_path, &model, &reasoning_effort).await {
+            let view = state.view.read().await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(render_settings_page(
+                    &state.token,
+                    &view,
+                    Some(&format!(
+                        "Could not save settings: {}",
+                        clip(&err.to_string(), 120)
+                    )),
+                )),
+            )
+                .into_response();
+        }
+
+        {
+            let mut view = state.view.write().await;
+            view.default_model = model.clone();
+            view.default_reasoning_effort = reasoning_effort.clone();
+        }
+
+        let _ = state.command_tx.send(TrayCommand::DefaultsSaved {
+            model,
+            reasoning_effort,
+        });
+
+        let view = state.view.read().await.clone();
+        Html(render_settings_page(
+            &state.token,
+            &view,
+            Some("Settings saved"),
+        ))
+        .into_response()
+    }
+
+    fn render_settings_page(token: &str, view: &SettingsView, message: Option<&str>) -> String {
+        let model_options = select_options(&view.model_choices, &view.default_model);
+        let reasoning_options =
+            select_options(&view.reasoning_choices, &view.default_reasoning_effort);
+        let message_html = message.map_or(String::new(), |message| {
+            format!("<div class=\"notice\">{}</div>", html_escape(message))
+        });
+        format!(
+            r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenAI Codex Proxy Settings</title>
+<style>
+:root {{
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f7f9;
+  color: #15181d;
+}}
+body {{ margin: 0; min-height: 100vh; }}
+main {{ width: min(760px, calc(100vw - 32px)); margin: 32px auto; }}
+h1 {{ font-size: 22px; line-height: 1.2; margin: 0 0 4px; }}
+.subtle {{ color: #616a76; font-size: 13px; margin: 0 0 24px; }}
+section {{ border-top: 1px solid #d7dce3; padding: 20px 0; }}
+.grid {{ display: grid; grid-template-columns: 180px 1fr; gap: 14px 18px; align-items: center; }}
+label, .label {{ color: #343a43; font-size: 13px; font-weight: 600; }}
+select, input, textarea {{
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #b8c0ca;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #15181d;
+  font: inherit;
+  font-size: 14px;
+  padding: 9px 10px;
+}}
+textarea {{ min-height: 96px; resize: vertical; }}
+.actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }}
+button {{
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  padding: 9px 14px;
+}}
+button.secondary {{ border-color: #b8c0ca; background: transparent; color: #1f2937; }}
+.notice {{
+  border-left: 4px solid #2563eb;
+  background: #eaf1ff;
+  color: #16356e;
+  padding: 10px 12px;
+  margin: 0 0 18px;
+  font-size: 14px;
+}}
+code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ background: #101216; color: #eef1f5; }}
+  .subtle {{ color: #98a2b3; }}
+  section {{ border-top-color: #303741; }}
+  label, .label {{ color: #d2d8e2; }}
+  select, input, textarea {{ border-color: #47515f; background: #171b21; color: #eef1f5; }}
+  button.secondary {{ border-color: #47515f; color: #eef1f5; }}
+  .notice {{ background: #13213c; color: #cfe0ff; }}
+}}
+@media (max-width: 620px) {{
+  main {{ width: min(100vw - 24px, 760px); margin-block: 20px; }}
+  .grid {{ grid-template-columns: 1fr; gap: 7px; }}
+  .actions {{ justify-content: stretch; flex-direction: column; }}
+}}
+</style>
+</head>
+<body>
+<main>
+  <h1>OpenAI Codex Proxy Settings</h1>
+  <p class="subtle">Release <code>{release}</code></p>
+  {message_html}
+  <form method="post" action="/">
+    <input type="hidden" name="token" value="{token}">
+    <section>
+      <div class="grid">
+        <div class="label">ChatGPT</div>
+        <div>{auth_status}</div>
+        <label for="default_model">Default model</label>
+        <select id="default_model" name="default_model">{model_options}</select>
+        <label for="default_reasoning_effort">Default reasoning</label>
+        <select id="default_reasoning_effort" name="default_reasoning_effort">{reasoning_options}</select>
+      </div>
+      <div class="actions">
+        <button type="submit">Save Settings</button>
+      </div>
+    </section>
+  </form>
+  <section>
+    <div class="grid">
+      <label for="base_url">Base URL</label>
+      <input id="base_url" readonly value="{base_url}">
+      <label for="local_api_key">Local API key</label>
+      <input id="local_api_key" readonly value="{local_api_key}">
+      <label for="client_settings">Client settings</label>
+      <textarea id="client_settings" readonly>{client_settings}</textarea>
+    </div>
+    <div class="actions">
+      <button class="secondary" type="button" data-copy="base_url">Copy Base URL</button>
+      <button class="secondary" type="button" data-copy="local_api_key">Copy API Key</button>
+      <button class="secondary" type="button" data-copy="client_settings">Copy Client Settings</button>
+    </div>
+  </section>
+</main>
+<script>
+for (const button of document.querySelectorAll("[data-copy]")) {{
+  button.addEventListener("click", async () => {{
+    const target = document.getElementById(button.dataset.copy);
+    await navigator.clipboard.writeText(target.value);
+    const original = button.textContent;
+    button.textContent = "Copied";
+    setTimeout(() => button.textContent = original, 1200);
+  }});
+}}
+</script>
+</body>
+</html>"#,
+            release = html_escape(&view.release),
+            message_html = message_html,
+            token = html_escape(token),
+            auth_status = html_escape(&view.auth_status),
+            model_options = model_options,
+            reasoning_options = reasoning_options,
+            base_url = html_escape(&view.base_url),
+            local_api_key = html_escape(&view.local_api_key),
+            client_settings = html_escape(&view.client_settings),
+        )
+    }
+
+    fn select_options(choices: &[String], selected: &str) -> String {
+        choices
+            .iter()
+            .map(|choice| {
+                let selected_attr = if choice == selected { " selected" } else { "" };
+                format!(
+                    "<option value=\"{}\"{}>{}</option>",
+                    html_escape(choice),
+                    selected_attr,
+                    html_escape(choice)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn html_escape(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match ch {
+                '&' => escaped.push_str("&amp;"),
+                '<' => escaped.push_str("&lt;"),
+                '>' => escaped.push_str("&gt;"),
+                '"' => escaped.push_str("&quot;"),
+                '\'' => escaped.push_str("&#39;"),
+                _ => escaped.push(ch),
+            }
+        }
+        escaped
+    }
+
+    fn model_choices_for_config(config: &TrayConfig) -> Vec<String> {
+        let configured = if config.models.is_empty() {
+            vec![DEFAULT_MODEL.to_string()]
+        } else {
+            config.models.clone()
+        };
+
+        let mut choices = Vec::new();
+        for model in configured {
+            let model = model.trim();
+            if !model.is_empty() && !choices.iter().any(|choice| choice == model) {
+                choices.push(model.to_string());
+            }
+        }
+
+        let selected = configured_default_model(config.default_model.clone());
+        if !choices.iter().any(|model| model == &selected) {
+            choices.push(selected);
+        }
+        choices
+    }
+
+    fn reasoning_choices() -> Vec<String> {
+        SUPPORTED_REASONING_EFFORTS
+            .iter()
+            .map(|effort| (*effort).to_string())
+            .collect()
+    }
+
     async fn set_tray(
         handle: &ksni::Handle<ProxyTray>,
         status: ProxyStatus,
@@ -821,6 +1169,21 @@ mod linux {
             .update(|tray| {
                 tray.status = status;
                 tray.last_message = message;
+            })
+            .await;
+    }
+
+    async fn set_defaults(
+        handle: &ksni::Handle<ProxyTray>,
+        model: String,
+        reasoning_effort: String,
+        message: String,
+    ) {
+        let _ = handle
+            .update(|tray| {
+                tray.config.default_model = Some(model);
+                tray.config.default_reasoning_effort = Some(reasoning_effort);
+                tray.last_message = Some(message);
             })
             .await;
     }
@@ -1082,15 +1445,10 @@ mod linux {
         )
     }
 
-    async fn save_default_model(path: &std::path::Path, model: &str) -> Result<()> {
+    async fn save_defaults(path: &Path, model: &str, reasoning_effort: &str) -> Result<()> {
         let mut config = load_local_config_from_path(path).await?;
         config.default_model = Some(model.to_string());
-        save_local_config_to_path(path, &config).await
-    }
-
-    async fn save_default_reasoning_effort(path: &std::path::Path, effort: &str) -> Result<()> {
-        let mut config = load_local_config_from_path(path).await?;
-        config.default_reasoning_effort = Some(effort.to_string());
+        config.default_reasoning_effort = Some(reasoning_effort.to_string());
         save_local_config_to_path(path, &config).await
     }
 

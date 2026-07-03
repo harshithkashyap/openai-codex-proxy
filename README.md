@@ -163,7 +163,7 @@ Opening a release AppImage without arguments also starts tray mode.
 
 The tray menu shows the current proxy status, ChatGPT connected status, release/build identifier, base URL, default model, default reasoning effort, and the latest lifecycle message. Use **Log in to ChatGPT** to start browser OAuth, then **Start Proxy** to run the local server in the same process. When you are signed in, the menu shows a connected state and enables **Log out of ChatGPT**. Logging out removes the local file-backed ChatGPT auth and stops the proxy first if it is running.
 
-Use the tray's default model and default reasoning selectors to choose values used only when a downstream client omits those fields. Client-provided `model`, `reasoning.effort`, `reasoning_effort`, or `reasoningEffort` values still win. If the proxy is already running, changed defaults are saved immediately and apply the next time you stop and start the proxy.
+Use **Open Settings** from the tray to choose the default model and default reasoning effort with normal dropdown controls. These values are used only when a downstream client omits those fields. Client-provided `model`, `reasoning.effort`, `reasoning_effort`, or `reasoningEffort` values still win. If the proxy is already running, changed defaults are saved immediately and apply the next time you stop and start the proxy.
 
 The tray status icon and menu action icons are bundled with the project instead of relying on desktop-theme icon names. AppImage launcher metadata also uses the bundled project icon.
 
